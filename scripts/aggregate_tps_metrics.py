@@ -46,6 +46,7 @@ def summarize_run(row: pd.Series) -> Dict[str, float]:
     for needed in [
         "arrived_at",
         "completed_at",
+        "decode_arrived_at",
         "decode_time",
         "request_num_decode_tokens",
     ]:
@@ -67,6 +68,20 @@ def summarize_run(row: pd.Series) -> Dict[str, float]:
     )
     per_request_tps = pd.Series(per_request_tps).replace([np.inf, -np.inf], np.nan).dropna()
 
+    # Pure decode-time view excludes prefill tail and scheduling lag by using
+    # completed_at - decode_arrived_at.
+    pure_decode_time = df["completed_at"] - df["decode_arrived_at"]
+    per_request_tps_pure_decode = np.where(
+        pure_decode_time > 0,
+        df["request_num_decode_tokens"] / pure_decode_time,
+        np.nan,
+    )
+    per_request_tps_pure_decode = (
+        pd.Series(per_request_tps_pure_decode)
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
+
     return {
         "decode_tokens_sum": decode_tokens_sum,
         "window_start": window_start,
@@ -77,13 +92,33 @@ def summarize_run(row: pd.Series) -> Dict[str, float]:
         "single_stream_tps_p50": float(per_request_tps.quantile(0.50)) if len(per_request_tps) else float("nan"),
         "single_stream_tps_p95": float(per_request_tps.quantile(0.95)) if len(per_request_tps) else float("nan"),
         "single_stream_tps_p99": float(per_request_tps.quantile(0.99)) if len(per_request_tps) else float("nan"),
+        "single_stream_tps_pure_decode_mean": (
+            float(per_request_tps_pure_decode.mean())
+            if len(per_request_tps_pure_decode)
+            else float("nan")
+        ),
+        "single_stream_tps_pure_decode_p50": (
+            float(per_request_tps_pure_decode.quantile(0.50))
+            if len(per_request_tps_pure_decode)
+            else float("nan")
+        ),
+        "single_stream_tps_pure_decode_p95": (
+            float(per_request_tps_pure_decode.quantile(0.95))
+            if len(per_request_tps_pure_decode)
+            else float("nan")
+        ),
+        "single_stream_tps_pure_decode_p99": (
+            float(per_request_tps_pure_decode.quantile(0.99))
+            if len(per_request_tps_pure_decode)
+            else float("nan")
+        ),
         "request_count": int(len(df)),
     }
 
 
 def build_effect_rows(summary: pd.DataFrame) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
-    metrics = ["system_tps", "single_stream_tps_mean"]
+    metrics = ["system_tps", "single_stream_tps_mean", "single_stream_tps_pure_decode_mean"]
 
     for backend, bdf in summary.groupby("backend"):
         # Main effect: network determinism
