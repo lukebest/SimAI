@@ -190,6 +190,69 @@ docker run --gpus all -it --rm image:latest
 
 **Note**: please add `ENV FLASH_MLA_DISABLE_SM100=1` to Dockerfile if using Hopper GPUs.
 
+## TPS Matrix Experiment (LLM Inference)
+
+This repository includes an end-to-end experiment workflow for LLM inference TPS studies
+with both `simai_analytical` and `simai_simulation` backends.
+
+### Goal
+
+Evaluate two metrics under a full-factor matrix:
+
+- **System TPS**: `sum(decode_tokens) / (max(completed_at) - min(arrived_at))`
+- **Single-stream TPS** (per request): `decode_tokens / decode_time`
+
+### Matrix Definition
+
+Default matrix config:
+
+- Config file: `experiments/llm_inference_tps_matrix.yaml`
+- Factor A (network determinism): 3 levels (`A1/A2/A3`)
+- Factor B (memory-medium bandwidth): 3 levels (`B1/B2/B3`)
+- Backends: `simai_analytical`, `simai_simulation`
+- Repeats: default `3` per combination
+
+### Run the Matrix
+
+Use the project venv Python (required by Vidur dependencies):
+
+```bash
+./venv/bin/python scripts/llm_inference_tps_matrix.py --config experiments/llm_inference_tps_matrix.yaml
+```
+
+Useful options:
+
+```bash
+# Preview commands only
+./venv/bin/python scripts/llm_inference_tps_matrix.py --dry-run --max-runs 4
+
+# Skip already successful runs recorded in manifest
+./venv/bin/python scripts/llm_inference_tps_matrix.py --skip-existing
+```
+
+### Aggregate TPS Results
+
+After runs finish:
+
+```bash
+./venv/bin/python scripts/aggregate_tps_metrics.py \
+  --manifest results/tps_matrix/runs_manifest.csv \
+  --summary-out results/tps_matrix/tps_summary.csv \
+  --effects-out results/tps_matrix/tps_effects.csv
+```
+
+Output files:
+
+- `results/tps_matrix/runs_manifest.csv`: run-level execution records
+- `results/tps_matrix/tps_summary.csv`: run-level TPS metrics
+- `results/tps_matrix/tps_effects.csv`: main effects + interaction surface
+
+### Notes
+
+- Generated NS3 config variants are stored in `results/tps_matrix/generated_configs/`.
+- `metrics_config_store_plots` is disabled by default in this workflow to avoid
+  kaleido/chrome plot rendering issues during batch runs.
+
 # Acknowledgments
 
 A huge thanks to the following people and organizations who have contributed to this project:

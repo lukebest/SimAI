@@ -1,0 +1,70 @@
+experiment_name: llm_inference_tps_matrix
+description: "Full-factor TPS study for LLM inference (analytical + ns3)"
+
+simai_root: /home/luke/SimAI
+vidur_python: /home/luke/SimAI/venv/bin/python
+vidur_workdir: /home/luke/SimAI/vidur-alibabacloud
+vidur_module: vidur.main
+
+# Repeats per factor combination.
+repeats: 3
+
+# Common arguments shared by all runs.
+common_args:
+  poisson_request_interval_generator_config_qps: 100
+  synthetic_request_generator_config_num_requests: 20
+  length_generator_config_type: fixed
+  fixed_request_length_generator_config_prefill_tokens: 1024
+  fixed_request_length_generator_config_decode_tokens: 10
+  interval_generator_config_type: poisson
+  cluster_config_num_replicas: 4
+  replica_config_pd_node_ratio: 0.5
+  global_scheduler_config_type: split_wise
+  replica_scheduler_config_type: split_wise
+  replica_config_model_name: meta-llama/Meta-Llama-3-8B
+  replica_config_tensor_parallel_size: 4
+  replica_config_num_pipeline_stages: 1
+  replica_config_expert_model_parallel_size: 1
+  replica_config_device: a100
+  replica_config_network_device: a100_pairwise_nvlink
+  random_forrest_execution_time_predictor_config_skip_cpu_overhead_modeling: true
+  metrics_config_store_plots: false
+
+backends:
+  - simai_analytical
+  - simai_simulation
+
+# Factor A: network determinism (lower error_rate_per_link is more deterministic)
+network_determinism_levels:
+  - id: A1_ideal
+    label: ideal_determinism
+    error_rate_per_link: 0.0
+  - id: A2_medium
+    label: medium_determinism
+    error_rate_per_link: 0.00001
+  - id: A3_low
+    label: low_determinism
+    error_rate_per_link: 0.0001
+
+# Factor B: memory-medium bandwidth model (GB/s)
+memory_bandwidth_levels:
+  - id: B1_dram
+    label: dram
+    bandwidth_gbps: 64
+  - id: B2_hbm4
+    label: hbm4
+    bandwidth_gbps: 2048
+  - id: B3_sram
+    label: sram
+    bandwidth_gbps: 80000
+
+simai:
+  topo: /home/luke/SimAI/Spectrum-X_128g_8gps_100Gbps_A100
+  base_config: /home/luke/SimAI/astra-sim-alibabacloud/inputs/config/SimAI.local.conf
+
+output:
+  root: /home/luke/SimAI/results/tps_matrix
+  generated_configs_dir: /home/luke/SimAI/results/tps_matrix/generated_configs
+  runs_manifest: /home/luke/SimAI/results/tps_matrix/runs_manifest.csv
+  summary_csv: /home/luke/SimAI/results/tps_matrix/tps_summary.csv
+  effects_csv: /home/luke/SimAI/results/tps_matrix/tps_effects.csv
