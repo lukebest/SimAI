@@ -624,6 +624,28 @@ class BaseExecutionTimePredictorConfig(BasePolyConfig):
             )
         },
     )
+    enable_tp_bandwidth_scaling: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "Scale TP communication latency by replica NVLink bandwidth "
+                "relative to tp_comm_reference_bandwidth_gbps."
+            )
+        },
+    )
+    tp_comm_reference_bandwidth_gbps: float = field(
+        default=2048.0,
+        metadata={
+            "help": (
+                "Reference bandwidth used to normalize TP communication latency "
+                "scaling."
+            )
+        },
+    )
+    simai_analytical_busbw_file: str = field(
+        default="../example/busbw.yaml",
+        metadata={"help": "Path to SimAI analytical bus bandwidth yaml."},
+    )
     backend: str = field(
         default="vidur",
         # choices=["vidur", "simai_simulation", "simai_analytical"],

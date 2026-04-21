@@ -50,7 +50,27 @@ class TPTimePredictor:
             assert os.path.isdir(self.workload_path), f"Workload path exists but is not a directory: {self.workload_path}"
         
         # self.workload_path = '/disk2/futianhao/software3/sim-ai-inference-n/simulator_output/tmp_simai_workload'
-        self.cache: Dict[int, float] = {}
+        self.cache: Dict[tuple, float] = {}
+
+    def _cache_key(self, num_tokens_in_batch: int) -> tuple:
+        return (
+            self.hidden_size,
+            num_tokens_in_batch,
+            self.tensor_size,
+            self.predictor_config.backend,
+            float(self.replica_config.nvlink_bandwidth),
+            float(self.replica_config.rdma_bandwidth),
+        )
+
+    def _scale_latency_by_bandwidth(self, latency_ms: float) -> float:
+        if not self.predictor_config.enable_tp_bandwidth_scaling:
+            return latency_ms
+
+        current_bw = float(self.replica_config.nvlink_bandwidth)
+        reference_bw = float(self.predictor_config.tp_comm_reference_bandwidth_gbps)
+        if current_bw <= 0 or reference_bw <= 0:
+            return latency_ms
+        return latency_ms * (reference_bw / current_bw)
 
 
     # > 重写 增加两个功能 复用相同的workload 和 相同command的结果
@@ -62,7 +82,7 @@ class TPTimePredictor:
         
         # 使用包含所有相关参数的元组作为缓存键，而不是仅仅使用all_reduce_bytes
         # Use a tuple containing all relevant parameters as cache key instead of just all_reduce_bytes
-        cache_key = (self.hidden_size, num_tokens_in_batch, self.tensor_size)
+        cache_key = self._cache_key(num_tokens_in_batch)
         
         # 如果结果已经在缓存中，直接返回
         # If result is already in cache, return directly
@@ -119,7 +139,12 @@ class TPTimePredictor:
         # 检查是否已经有对应命令的结果缓存
         # Check if result cache for corresponding command already exists
         command_identifier = hashlib.md5(
-            f'{workload_identifier}_{topo}_{conf}'.encode()
+            (
+                f'{workload_identifier}_{topo}_{conf}_'
+                f'{self.replica_config.nvlink_bandwidth}_'
+                f'{self.replica_config.rdma_bandwidth}_'
+                f'{self.predictor_config.tp_comm_reference_bandwidth_gbps}'
+            ).encode()
         ).hexdigest()
         result_file = f'{self.simai_dir}/ncclFlowModel_EndToEnd_{command_identifier}.csv'
         
@@ -159,6 +184,7 @@ class TPTimePredictor:
             # Second column of last row is total comm
             # simai returns us, vidur requires ms
             latency = float(rows[-1][1]) * 1e-3
+            latency = self._scale_latency_by_bandwidth(latency)
             
             self.cache[cache_key] = latency
         
@@ -187,7 +213,7 @@ class TPTimePredictor:
         
         # 使用包含所有相关参数的元组作为缓存键，而不是仅仅使用all_reduce_bytes
         # Use a tuple containing all relevant parameters as cache key instead of just all_reduce_bytes
-        cache_key = (self.hidden_size, num_tokens_in_batch, self.tensor_size)
+        cache_key = self._cache_key(num_tokens_in_batch)
         
         # 如果结果已经在缓存中，直接返回
         # If result is already in cache, return directly
@@ -245,8 +271,14 @@ class TPTimePredictor:
         
         # 检查是否已经有对应命令的结果缓存
         # Check if result cache for corresponding command already exists
+        busbw_path = os.path.abspath(self.predictor_config.simai_analytical_busbw_file)
         command_identifier = hashlib.md5(
-            f'{workload_identifier}_{topo}_{conf}'.encode()
+            (
+                f'{workload_identifier}_{topo}_{conf}_{busbw_path}_'
+                f'{self.replica_config.nvlink_bandwidth}_'
+                f'{self.replica_config.rdma_bandwidth}_'
+                f'{self.predictor_config.tp_comm_reference_bandwidth_gbps}'
+            ).encode()
         ).hexdigest()
         # result_file = f'{self.simai_dir}/ncclFlowModel_EndToEnd_{command_identifier}.csv'
         result_file = f'{self.simai_dir}/analytical_EndToEnd_{command_identifier}.csv'
@@ -261,9 +293,12 @@ class TPTimePredictor:
             
             cmd_g_p_s = 8          
             cmd_r= 'analytical_'    # Result file prefix
-            cmd_busbw = f'{self.simai_dir}/example/busbw.yaml'
-            # command = f'{self.simai_analytical_binary} -w {workload_file} -g {self.replica_config.world_size} -g_p_s {cmd_g_p_s} -r {cmd_r} -busbw {cmd_busbw}'
-            command = f'{self.simai_analytical_binary} -w {workload_file} -g {self.replica_config.world_size} -g_p_s {cmd_g_p_s} -r {cmd_r}'
+            cmd_busbw = busbw_path
+            command = (
+                f'{self.simai_analytical_binary} -w {workload_file} '
+                f'-g {self.replica_config.world_size} -g_p_s {cmd_g_p_s} '
+                f'-r {cmd_r} -busbw {cmd_busbw}'
+            )
             result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=self.simai_dir)
             if result.returncode != 0:
                 print(f'{command} failed. ret: {result.returncode}')
@@ -299,7 +334,8 @@ class TPTimePredictor:
             
             # 从索引5的位置获取延迟数据（微秒），转换为毫秒
             # Get latency data from index 5 position (microseconds), convert to milliseconds
-            latency = float(rows[-1][5]) * 1e-3  
+            latency = float(rows[-1][5]) * 1e-3
+            latency = self._scale_latency_by_bandwidth(latency)
             
             # TODO: > 量太小有可能tp通信量是零， 比如 通信量为65535的时候， 就是0
             # 通信量为3276800的时候， laytency=0.015ms

@@ -60,26 +60,22 @@ class BaseExecutionTimePredictor(ABC):
             # if self._config.simai_simulation_enable:
             if self._config.backend == "simai_simulation":
                 tensor_parallel_communication_time = self._tp_time_predictor.get_execution_time(batch)
-                
-                # TODO: chentong fix it
-                # fy：有可能跑出来结果是-1
-                # fy: Result may be -1
-                assert tensor_parallel_communication_time >= 0, "> Debug: tensor_parallel_communication_time must be greater than 0"
-                
+
                 # >: 如果simai 后端返回-1，则调用vidur的查表方法
                 # >: If simai backend returns -1, call vidur's lookup table method 
                 if tensor_parallel_communication_time == -1:
                     tensor_parallel_communication_time = self._get_tensor_parallel_communication_time(batch)
+                assert tensor_parallel_communication_time >= 0, "> Debug: tensor_parallel_communication_time must be greater than 0"
                     
             # elif self._config.simai_analytical_enable:
             elif self._config.backend == "simai_analytical":
                 tensor_parallel_communication_time = self._tp_time_predictor.get_execution_time_by_simai_analytical(batch)
-                assert tensor_parallel_communication_time >= 0, "> Debug: tensor_parallel_communication_time must be greater than 0"
-                
+
                 # >：如果simai 后端返回-1，则调用vidur的查表方法
                 # >: If simai backend returns -1, call vidur's lookup table method 
                 if tensor_parallel_communication_time == -1:
                     tensor_parallel_communication_time = self._get_tensor_parallel_communication_time(batch)
+                assert tensor_parallel_communication_time >= 0, "> Debug: tensor_parallel_communication_time must be greater than 0"
             
             elif self._config.backend == "aicb":
                 # TODO currently not supported TP communication when using aicb

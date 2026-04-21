@@ -70,7 +70,9 @@ def summarize_run(row: pd.Series) -> Dict[str, float]:
 
     # Pure decode-time view excludes prefill tail and scheduling lag by using
     # completed_at - decode_arrived_at.
-    pure_decode_time = df["completed_at"] - df["decode_arrived_at"]
+    pure_decode_time_raw = df["completed_at"] - df["decode_arrived_at"]
+    negative_pure_decode_count = int((pure_decode_time_raw < 0).sum())
+    pure_decode_time = pure_decode_time_raw.clip(lower=0)
     per_request_tps_pure_decode = np.where(
         pure_decode_time > 0,
         df["request_num_decode_tokens"] / pure_decode_time,
@@ -112,6 +114,7 @@ def summarize_run(row: pd.Series) -> Dict[str, float]:
             if len(per_request_tps_pure_decode)
             else float("nan")
         ),
+        "pure_decode_negative_count": negative_pure_decode_count,
         "request_count": int(len(df)),
     }
 
