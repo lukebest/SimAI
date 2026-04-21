@@ -46,6 +46,12 @@ UTILIZATION_STR = "Utilization (%)"
 OPERATION_STR = "Operation"
 TIME_STR_MS = "Time (ms)"
 
+# Request-level categorical metrics should be persisted to CSV but not treated
+# as numeric distributions for CDF/stat plotting.
+NON_NUMERIC_REQUEST_METRICS = {
+    RequestMetricsTimeDistributions.PD_P2P_COMM_DTYPE.value,
+}
+
 
 class MetricsStore:
 
@@ -385,6 +391,8 @@ class MetricsStore:
             dataseries.plot_histogram(base_plot_path, dataseries._y_name)
 
         for dataseries in self._request_metrics_time_distributions.values():
+            if dataseries._y_name in NON_NUMERIC_REQUEST_METRICS:
+                continue
             dataseries.plot_cdf(base_plot_path, dataseries._y_name, TIME_STR)
 
     def _store_batch_metrics(self, base_plot_path: str):

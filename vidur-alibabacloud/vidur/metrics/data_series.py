@@ -84,18 +84,26 @@ class DataSeries:
         if y_name is None:
             y_name = self._y_name
 
+        series = df[y_name]
+        numeric_series = pd.to_numeric(series, errors="coerce")
+        if not numeric_series.notna().any():
+            logger.debug(
+                f"{plot_name}: skipping numeric stats for non-numeric metric {y_name}"
+            )
+            return
+
         logger.debug(
             f"{plot_name}: {y_name} stats:"
-            f" min: {df[y_name].min()},"
-            f" max: {df[y_name].max()},"
-            f" mean: {df[y_name].mean()},"
+            f" min: {numeric_series.min()},"
+            f" max: {numeric_series.max()},"
+            f" mean: {numeric_series.mean()},"
         )
         if wandb.run:
             wandb.log(
                 {
-                    f"{plot_name}_min": df[y_name].min(),
-                    f"{plot_name}_max": df[y_name].max(),
-                    f"{plot_name}_mean": df[y_name].mean(),
+                    f"{plot_name}_min": numeric_series.min(),
+                    f"{plot_name}_max": numeric_series.max(),
+                    f"{plot_name}_mean": numeric_series.mean(),
                 },
                 step=0,
             )
@@ -109,26 +117,34 @@ class DataSeries:
         if y_name is None:
             y_name = self._y_name
 
+        series = df[y_name]
+        numeric_series = pd.to_numeric(series, errors="coerce")
+        if not numeric_series.notna().any():
+            logger.debug(
+                f"{plot_name}: skipping distribution stats for non-numeric metric {y_name}"
+            )
+            return
+
         logger.debug(
             f"{plot_name}: {y_name} stats:"
-            f" min: {df[y_name].min()},"
-            f" max: {df[y_name].max()},"
-            f" mean: {df[y_name].mean()},"
-            f" median: {df[y_name].median()},"
-            f" 95th percentile: {df[y_name].quantile(0.95)},"
-            f" 99th percentile: {df[y_name].quantile(0.99)}"
-            f" 99.9th percentile: {df[y_name].quantile(0.999)}"
+            f" min: {numeric_series.min()},"
+            f" max: {numeric_series.max()},"
+            f" mean: {numeric_series.mean()},"
+            f" median: {numeric_series.median()},"
+            f" 95th percentile: {numeric_series.quantile(0.95)},"
+            f" 99th percentile: {numeric_series.quantile(0.99)}"
+            f" 99.9th percentile: {numeric_series.quantile(0.999)}"
         )
         if wandb.run:
             wandb.log(
                 {
-                    f"{plot_name}_min": df[y_name].min(),
-                    f"{plot_name}_max": df[y_name].max(),
-                    f"{plot_name}_mean": df[y_name].mean(),
-                    f"{plot_name}_median": df[y_name].median(),
-                    f"{plot_name}_95th_percentile": df[y_name].quantile(0.95),
-                    f"{plot_name}_99th_percentile": df[y_name].quantile(0.99),
-                    f"{plot_name}_99.9th_percentile": df[y_name].quantile(0.999),
+                    f"{plot_name}_min": numeric_series.min(),
+                    f"{plot_name}_max": numeric_series.max(),
+                    f"{plot_name}_mean": numeric_series.mean(),
+                    f"{plot_name}_median": numeric_series.median(),
+                    f"{plot_name}_95th_percentile": numeric_series.quantile(0.95),
+                    f"{plot_name}_99th_percentile": numeric_series.quantile(0.99),
+                    f"{plot_name}_99.9th_percentile": numeric_series.quantile(0.999),
                 },
                 step=0,
             )
