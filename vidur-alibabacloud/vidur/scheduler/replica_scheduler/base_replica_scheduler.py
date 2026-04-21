@@ -53,6 +53,8 @@ class BaseReplicaScheduler(ABC):
         self._request_queue = []
         self._num_allocated_blocks = 0
         self._allocation_map = {}
+        # Updated by ReplicaScheduleEvent so schedulers can gate on event time.
+        self._current_schedule_time = 0.0
 
         # 每个PP流水线阶段有自己的scheduler
         # Each PP pipeline stage has its own scheduler

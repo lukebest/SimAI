@@ -26,6 +26,7 @@ class ReplicaScheduleEvent(BaseEvent):
         from vidur.events.batch_stage_arrival_event import BatchStageArrivalEvent
 
         replica_scheduler = scheduler.get_replica_scheduler(self._replica_id)
+        replica_scheduler._current_schedule_time = self.time
         # _batches中至多有PP-stages个batch
         # TODO: 这里有一点奇怪，他这样的话就是每次issue PP-stages个batch
         # _batches contains at most PP-stages batches

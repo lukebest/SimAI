@@ -387,6 +387,9 @@ class SplitwiseReplicaScheduler(BaseReplicaScheduler):  # Define SplitwiseReplic
                         # 组batch + 判断到达时间
                         # Form batch + Check arrival time
                         assert request.decode_arrived_at != float('inf'), "> Debug: check if decode_arrived_at timing has been properly modified"
+                        # Never schedule decode before transfer handoff arrives.
+                        if request.decode_arrived_at > self._current_schedule_time:
+                            continue
                         
                         # if request.decode_arrived_at == float('inf'):
                         #     continue
