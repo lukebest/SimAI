@@ -360,6 +360,15 @@ class SplitwiseReplicaScheduler(BaseReplicaScheduler):  # Define SplitwiseReplic
                 return Batch(self._replica_id, requests, num_tokens)  # Create and return Batch object
         elif self.replica.replica_type == ReplicaType.DECODE:
             tmp_requests_to_remove = list()
+            ready_decode_requests = len(self._preempted_requests) + sum(
+                1
+                for req in self._request_queue
+                if (
+                    req.request_type == RequestType.DECODE
+                    and req.is_prefill_complete
+                    and req.decode_arrived_at <= self._current_schedule_time
+                )
+            )
             # print(f"> Debug: entering DECODE replica path len(self._request_queue)={len(self._request_queue)} len(self._preempted_requests)={len(self._preempted_requests)}")
             
             # 对于batch end 加回来的请求（默认之前的放得下）# （没完成） # 因此 batch end 不能把完成p的request 放回p replica； 但可以放到 d replica中； 不过目前逻辑不需要放入d replica中
@@ -452,7 +461,12 @@ class SplitwiseReplicaScheduler(BaseReplicaScheduler):  # Define SplitwiseReplic
                 # for req in requests:
                     # print(f"> Debug: req id = {req._id}")
                 # print(f"> Debug: formed decode batch self.replica.replica_type={self.replica.replica_type} self.replica._id={self.replica._id}  self._replica_id={self._replica_id}, req count={len(requests)}, num_tokens={num_tokens}")
-                return Batch(self._replica_id, requests, num_tokens)  # Create and return Batch object
+                batch = Batch(self._replica_id, requests, num_tokens)
+                batch._decode_ready_request_count = max(
+                    batch.size,
+                    ready_decode_requests,
+                )
+                return batch  # Create and return Batch object
             
             if not requests:
                 # print(f"> Debug: failed to form decode batch, checking self._preempted_requests queue replica_id={self._replica_id}, req count={len(requests)}, num_tokens={num_tokens}")

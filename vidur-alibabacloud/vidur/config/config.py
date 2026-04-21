@@ -646,6 +646,37 @@ class BaseExecutionTimePredictorConfig(BasePolyConfig):
         default="../example/busbw.yaml",
         metadata={"help": "Path to SimAI analytical bus bandwidth yaml."},
     )
+    enable_decode_network_contention_model: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable decode-stage network contention scaling for TP communication."
+            )
+        },
+    )
+    decode_network_contention_alpha: float = field(
+        default=0.2,
+        metadata={
+            "help": (
+                "Per-request contention slope for decode TP communication scaling."
+            )
+        },
+    )
+    decode_network_contention_max_factor: float = field(
+        default=4.0,
+        metadata={
+            "help": "Upper bound for decode contention multiplier.",
+        },
+    )
+    simai_tp_full_co_simulation: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Force TP communication predictor to run SimAI every call "
+                "without lookup cache reuse."
+            )
+        },
+    )
     backend: str = field(
         default="vidur",
         # choices=["vidur", "simai_simulation", "simai_analytical"],

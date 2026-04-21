@@ -62,6 +62,9 @@ class TPTimePredictor:
             float(self.replica_config.rdma_bandwidth),
         )
 
+    def _use_tp_cache(self) -> bool:
+        return not bool(self.predictor_config.simai_tp_full_co_simulation)
+
     def _scale_latency_by_bandwidth(self, latency_ms: float) -> float:
         if not self.predictor_config.enable_tp_bandwidth_scaling:
             return latency_ms
@@ -71,6 +74,27 @@ class TPTimePredictor:
         if current_bw <= 0 or reference_bw <= 0:
             return latency_ms
         return latency_ms * (reference_bw / current_bw)
+
+    def _apply_decode_contention(self, batch: Batch, latency_ms: float) -> float:
+        if not self.predictor_config.enable_decode_network_contention_model:
+            return latency_ms
+        if batch.num_prefill_tokens > 0:
+            return latency_ms
+
+        ready_requests = int(
+            max(
+                batch.size,
+                getattr(batch, "_decode_ready_request_count", batch.size),
+            )
+        )
+        if ready_requests <= 1:
+            return latency_ms
+
+        alpha = float(self.predictor_config.decode_network_contention_alpha)
+        max_factor = float(self.predictor_config.decode_network_contention_max_factor)
+        factor = 1.0 + alpha * (ready_requests - 1)
+        factor = min(max_factor, max(1.0, factor))
+        return latency_ms * factor
 
 
     # > 重写 增加两个功能 复用相同的workload 和 相同command的结果
@@ -87,8 +111,9 @@ class TPTimePredictor:
         # 如果结果已经在缓存中，直接返回
         # If result is already in cache, return directly
         
-        if cache_key in self.cache:
-            return (self.cache[cache_key]
+        if self._use_tp_cache() and cache_key in self.cache:
+            comm_latency = self._apply_decode_contention(batch, self.cache[cache_key])
+            return (comm_latency
                 + self.predictor_config.nccl_cpu_launch_overhead_ms
                 + self.predictor_config.nccl_cpu_skew_overhead_per_device_ms
                 * self.replica_config.tensor_parallel_size**1.25)
@@ -150,7 +175,7 @@ class TPTimePredictor:
         
         # 如果结果文件不存在，则运行命令
         # Run command if result file does not exist
-        if not os.path.exists(result_file):
+        if self.predictor_config.simai_tp_full_co_simulation or not os.path.exists(result_file):
             # 调用simai
             # Call simai
             command = f'AS_SEND_LAT=6 AS_NVLS_ENABLE=1 {self.simai_ns3_binary} -t 16 -w {workload_file} -n {topo} -c {conf}'
@@ -186,9 +211,12 @@ class TPTimePredictor:
             latency = float(rows[-1][1]) * 1e-3
             latency = self._scale_latency_by_bandwidth(latency)
             
-            self.cache[cache_key] = latency
+            if self._use_tp_cache():
+                self.cache[cache_key] = latency
         
-        return (self.cache[cache_key]
+        cached_or_fresh_latency = self.cache.get(cache_key, latency)
+        comm_latency = self._apply_decode_contention(batch, cached_or_fresh_latency)
+        return (comm_latency
             # TODO: chentong whether we need these?
             # can these parameters be integreted into simai?
             + self.predictor_config.nccl_cpu_launch_overhead_ms
@@ -217,8 +245,9 @@ class TPTimePredictor:
         
         # 如果结果已经在缓存中，直接返回
         # If result is already in cache, return directly
-        if cache_key in self.cache:
-            return (self.cache[cache_key]
+        if self._use_tp_cache() and cache_key in self.cache:
+            comm_latency = self._apply_decode_contention(batch, self.cache[cache_key])
+            return (comm_latency
                 + self.predictor_config.nccl_cpu_launch_overhead_ms
                 + self.predictor_config.nccl_cpu_skew_overhead_per_device_ms
                 * self.replica_config.tensor_parallel_size**1.25)
@@ -285,7 +314,7 @@ class TPTimePredictor:
         
         # 如果结果文件不存在，则运行命令
         # Run command if result file does not exist
-        if not os.path.exists(result_file):
+        if self.predictor_config.simai_tp_full_co_simulation or not os.path.exists(result_file):
             # 调用simai
             # Call simai
             # command = f'AS_SEND_LAT=6 AS_NVLS_ENABLE=1 {self.simai_ns3_binary} -t 16 -w {workload_file} -n {topo} -c {conf}'
@@ -345,12 +374,15 @@ class TPTimePredictor:
             
             # 将结果存入缓存，以便后续相同参数的请求直接使用
             # Store result in cache for future requests with same parameters
-            self.cache[cache_key] = latency
+            if self._use_tp_cache():
+                self.cache[cache_key] = latency
 
         
         # 返回最终预测的执行时间，包括缓存的延迟和额外的开销
         # Return final predicted execution time, including cached latency and additional overhead
-        return (self.cache[cache_key]
+        cached_or_fresh_latency = self.cache.get(cache_key, latency)
+        comm_latency = self._apply_decode_contention(batch, cached_or_fresh_latency)
+        return (comm_latency
             # TODO: chentong whether we need these?
             # can these parameters be integreted into simai?
             + self.predictor_config.nccl_cpu_launch_overhead_ms
