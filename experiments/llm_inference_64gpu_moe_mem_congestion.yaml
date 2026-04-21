@@ -1,4 +1,4 @@
-experiment_name: llm_inference_64gpu_moe_mem_congestion
+experiment_name: llm_inference_64gpu_moe_mem_congestion_fullcosim_rerun
 description: "64-GPU MoE simulation: memory bandwidth x network queueing/congestion"
 
 simai_root: /home/luke/SimAI
@@ -78,8 +78,8 @@ simai:
   base_config: /home/luke/SimAI/astra-sim-alibabacloud/inputs/config/SimAI.local.conf
 
 output:
-  root: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion
-  generated_configs_dir: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion/generated_configs
-  runs_manifest: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion/runs_manifest.csv
-  summary_csv: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion/tps_summary.csv
-  effects_csv: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion/tps_effects.csv
+  root: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion_fullcosim_rerun
+  generated_configs_dir: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion_fullcosim_rerun/generated_configs
+  runs_manifest: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion_fullcosim_rerun/runs_manifest.csv
+  summary_csv: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion_fullcosim_rerun/tps_summary.csv
+  effects_csv: /home/luke/SimAI/results/tps_64gpu_moe_mem_congestion_fullcosim_rerun/tps_effects.csv
