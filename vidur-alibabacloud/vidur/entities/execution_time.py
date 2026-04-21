@@ -79,6 +79,16 @@ class ExecutionTime(BaseEntity):
         self._replica_config = replica_config
         self._model_config = replica_config.model_config
         self.replica_scheduler_config = replica_scheduler_config
+        unit = getattr(self._config, "profiling_time_unit", "ms").lower()
+        if unit == "ms":
+            self._profiling_time_to_seconds = 1e-3
+        elif unit == "us":
+            self._profiling_time_to_seconds = 1e-6
+        else:
+            raise ValueError(
+                f"Unsupported profiling_time_unit: {unit}. "
+                "Use 'ms' or 'us'."
+            )
         
         # 缓存 AICB 数据，避免重复加载
         # Optional[Dict[str, float]] 表示这个变量可以是 None 或者是一个键为字符串、值为浮点数的字典。
@@ -539,7 +549,7 @@ class ExecutionTime(BaseEntity):
             # return in seconds
             return (
                 pipeline_stage_execution_time + self.pipeline_parallel_communication_time
-            ) * 1e-3
+            ) * self._profiling_time_to_seconds
 
     @property
     def model_time_ms(self) -> float:
@@ -548,4 +558,4 @@ class ExecutionTime(BaseEntity):
     @property
     def total_time(self) -> float:
         # return in seconds
-        return self.model_time + self._get_cpu_overhead() * 1e-3
+        return self.model_time + self._get_cpu_overhead() * self._profiling_time_to_seconds

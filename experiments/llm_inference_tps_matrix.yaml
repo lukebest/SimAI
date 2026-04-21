@@ -28,6 +28,7 @@ common_args:
   replica_config_device: a100
   replica_config_network_device: a100_pairwise_nvlink
   random_forrest_execution_time_predictor_config_skip_cpu_overhead_modeling: true
+  random_forrest_execution_time_predictor_config_profiling_time_unit: us
   metrics_config_store_plots: false
 
 backends:

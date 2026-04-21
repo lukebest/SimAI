@@ -615,6 +615,15 @@ class BaseExecutionTimePredictorConfig(BasePolyConfig):
         default=True,
         metadata={"help": "Whether to skip CPU overhead modeling."},
     )
+    profiling_time_unit: str = field(
+        default="ms",
+        metadata={
+            "help": (
+                "Unit of profiling median values. "
+                "Supported values: ms, us."
+            )
+        },
+    )
     backend: str = field(
         default="vidur",
         # choices=["vidur", "simai_simulation", "simai_analytical"],
