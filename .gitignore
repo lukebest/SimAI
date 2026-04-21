@@ -11,3 +11,4 @@ test/log/
 venv
 *.csv
 *.txt
+**/__pycache__/*

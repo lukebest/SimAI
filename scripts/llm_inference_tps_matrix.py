@@ -189,7 +189,9 @@ def append_manifest_row(path: Path, row: Dict[str, Any]) -> None:
 
 def run_experiment(cfg: Dict[str, Any], spec: RunSpec, dry_run: bool) -> Dict[str, Any]:
     simai_root = Path(cfg["simai_root"]).resolve()
-    vidur_python = Path(cfg["vidur_python"]).resolve()
+    # Keep venv interpreter path as configured; resolving symlinks can silently
+    # switch back to system python and lose venv packages.
+    vidur_python = Path(cfg["vidur_python"]).expanduser()
     vidur_workdir = Path(cfg["vidur_workdir"]).resolve()
 
     out_cfg_dir = Path(cfg["output"]["generated_configs_dir"]).resolve()
@@ -210,9 +212,10 @@ def run_experiment(cfg: Dict[str, Any], spec: RunSpec, dry_run: bool) -> Dict[st
         generated_cfg
     )
     # Keep these aligned so "memory medium bandwidth" is reflected consistently.
-    common_args["replica_config_pd_p2p_comm_bandwidth"] = spec.memory_bandwidth_gbps
-    common_args["replica_config_nvlink_bandwidth"] = spec.memory_bandwidth_gbps
-    common_args["replica_config_rdma_bandwidth"] = spec.memory_bandwidth_gbps
+    mem_bw_int = int(round(spec.memory_bandwidth_gbps))
+    common_args["replica_config_pd_p2p_comm_bandwidth"] = mem_bw_int
+    common_args["replica_config_nvlink_bandwidth"] = mem_bw_int
+    common_args["replica_config_rdma_bandwidth"] = mem_bw_int
     common_args["replica_config_pd_p2p_comm_dtype"] = "float32"
 
     command = [
