@@ -30,6 +30,7 @@ class RunSpec:
     network_level_id: str
     network_label: str
     error_rate_per_link: float
+    network_arg_overrides: Dict[str, Any]
     memory_level_id: str
     memory_label: str
     memory_bandwidth_gbps: float
@@ -90,6 +91,7 @@ def build_run_specs(cfg: Dict[str, Any]) -> List[RunSpec]:
                 network_level_id=net["id"],
                 network_label=net["label"],
                 error_rate_per_link=float(net["error_rate_per_link"]),
+                network_arg_overrides=dict(net.get("arg_overrides", {})),
                 memory_level_id=mem["id"],
                 memory_label=mem["label"],
                 memory_bandwidth_gbps=float(mem["bandwidth_gbps"]),
@@ -202,6 +204,7 @@ def run_experiment(cfg: Dict[str, Any], spec: RunSpec, dry_run: bool) -> Dict[st
     write_ns3_config(base_cfg, generated_cfg, spec.error_rate_per_link)
 
     common_args = dict(cfg["common_args"])
+    common_args.update(spec.network_arg_overrides)
     common_args["metrics_config_output_dir"] = str(metrics_root)
     common_args["random_forrest_execution_time_predictor_config_backend"] = spec.backend
     common_args["random_forrest_execution_time_predictor_config_simai_dir"] = str(simai_root)
