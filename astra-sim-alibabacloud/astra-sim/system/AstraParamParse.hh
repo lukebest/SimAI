@@ -30,6 +30,7 @@
 #include <vector>
 #include <cstdint>
 #include "Common.hh"
+#include "astra-sim/system/BusBwYaml.hh"
 #define BUSBW_PATH ""
 using namespace std;
 
@@ -80,6 +81,8 @@ public:
   int thread;
   std::vector<int> gpus;
   std::string workload;
+  std::string busbw_yaml_path;
+  BusBwYamlConfig busbw_yaml;
   std::string res = "None";
   std::string res_folder = "None";
   std::string lang = "en";
@@ -107,7 +110,8 @@ int parse(int argc, char *argv[]) {
             std::cout << "-r,     --result            Output results path" << std::endl;
             std::cout << "-nv, --nvlink     Nvlink" << std::endl;
             std::cout << "-nic, --nic_busbw     NIC busbw" << std::endl;
-            std::cout << "-n_p_s, --bus-bandwidth     Bus bandwidth file" << std::endl;
+            std::cout << "-n_p_s, --nic_per_server     NICs per server" << std::endl;
+            std::cout << "-busbw, --bus-bandwidth     busbw YAML file path" << std::endl;
             std::cout << "-nic_t, --nic_type     NIC type(cx7,bf3),choose when disable nic " << std::endl;
             std::cout << "-g_type, --gpu_type     GPU type(A100,H100),choose when disable nvlink " << std::endl;
             std::cout << "-v, --visual    Enable visual output" << std::endl;
@@ -133,6 +137,8 @@ int parse(int argc, char *argv[]) {
             if (++i < argc) this->net_work_param.bw_per_nic = std::stof(argv[i]);
         } else if (arg == "-n_p_s" || arg == "--nic_per_server") {
             if (++i < argc) this->net_work_param.nics_per_server = std::stoi(argv[i]);
+        } else if (arg == "-busbw" || arg == "--bus-bandwidth") {
+            if (++i < argc) this->busbw_yaml_path = argv[i];
         } else if (arg == "-nic_t" || arg == "--nic_type") {
             if (++i < argc) this->net_work_param.nic_type = argv[i];
         } else if (arg == "-g_type" || arg == "--gpu_type") {

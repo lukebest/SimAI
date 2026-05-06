@@ -22,6 +22,7 @@
 #include "astra-sim/system/MockNcclLog.h"
 #include "astra-sim/system/AstraComputeAPI.hh"
 #include "astra-sim/system/AstraParamParse.hh"
+#include "astra-sim/system/BusBwYaml.hh"
 
 #include "AnalyticalNetwork.h"
 #include "AnaSim.h"
@@ -70,6 +71,13 @@ int main(int argc,char *argv[]) {
   if (param->parse(argc,argv)) {
     std::cerr << "-h,     --help              Help message" << std::endl;
     return -1;
+  }
+  if (!param->busbw_yaml_path.empty()) {
+    if (!load_bus_bw_yaml_file(param->busbw_yaml_path, param->busbw_yaml)) {
+      std::cerr << "Failed to load busbw file: " << param->busbw_yaml_path
+                << std::endl;
+      return -1;
+    }
   }
   param->mode = ModeType::ANALYTICAL;
   physical_dims = {param->gpus};

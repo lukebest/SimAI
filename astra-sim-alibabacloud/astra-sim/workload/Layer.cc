@@ -8,6 +8,7 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/IntData.hh"
 #include "astra-sim/system/MockNcclLog.h"
 #include "astra-sim/system/AstraParamParse.hh"
+#include "astra-sim/system/BusBwYaml.hh"
 // #ifdef ANALYTI
 #include "astra-sim/system/calbusbw.h"
 // #endif
@@ -963,6 +964,7 @@ Tick Layer::compute_time(
     char* coll_type = comtype_to_coll(comtype);
     float bw_ratio = 1.0;
     BusBwResult result;
+    bool use_yaml_busbw = false;
 
     if (1 < data_size && data_size < 1048576){
       if(nranks == 2) comp_time = 10000;
@@ -974,7 +976,36 @@ Tick Layer::compute_time(
       if(nranks == 128) comp_time = 320000;
       return comp_time;
     }
-  if (group_type == MockNccl::GroupType::TP ){
+    if (param->busbw_yaml.loaded) {
+      double ybw = 0.0;
+      std::string yaml_sec;
+      switch (group_type) {
+        case MockNccl::GroupType::TP:
+          yaml_sec = "TP";
+          break;
+        case MockNccl::GroupType::DP:
+          yaml_sec = "DP";
+          break;
+        case MockNccl::GroupType::EP:
+          yaml_sec = "EP";
+          break;
+        case MockNccl::GroupType::PP:
+          yaml_sec = "PP";
+          break;
+        case MockNccl::GroupType::DP_EP:
+          yaml_sec = "DP_EP";
+          break;
+        default:
+          break;
+      }
+      if (!yaml_sec.empty() &&
+          busbw_yaml_lookup(param->busbw_yaml, yaml_sec, coll_type, &ybw)) {
+        result.busbw = static_cast<float>(ybw);
+        result.is_nvlink = false;
+        use_yaml_busbw = true;
+      }
+    }
+  if (!use_yaml_busbw && group_type == MockNccl::GroupType::TP ){
       //TP_comm_inside
       if(tp_size <= gpus_per_server){
       result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,1,coll_type,tp_size,nic_type);
@@ -982,7 +1013,7 @@ Tick Layer::compute_time(
         int _node_count = tp_size / gpus_per_server;
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,nics_per_server,_node_count,coll_type,gpus_per_server,nic_type);
       }
-    }else if (group_type == MockNccl::GroupType::EP && nranks > 1)
+    }else if (!use_yaml_busbw && group_type == MockNccl::GroupType::EP && nranks > 1)
     {
      if(tp_size * nranks <= gpus_per_server){
       uint32_t _temp_gpus_per_server = gpus_per_server / tp_size;
@@ -994,7 +1025,7 @@ Tick Layer::compute_time(
       float _temp_nics_per_server = (tp_size > gpus_per_server) ? (nics_per_server / gpus_per_server) : (nics_per_server / tp_size);
       result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,_node_count,coll_type,_temp_gpus_per_server,nic_type);
      }
-    }else if(group_type == MockNccl::GroupType::DP && nranks > 1){
+    }else if(!use_yaml_busbw && group_type == MockNccl::GroupType::DP && nranks > 1){
       if(tp_size <= gpus_per_server){
         uint32_t _temp_gpus_per_server = gpus_per_server / tp_size;
         float _temp_nics_per_server = nics_per_server / tp_size;
@@ -1003,7 +1034,7 @@ Tick Layer::compute_time(
         float _temp_nics_per_server = nics_per_server / gpus_per_server;
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,nranks,coll_type,1,nic_type);
       }
-    }else if(group_type == MockNccl::GroupType::DP_EP && nranks > 1){
+    }else if(!use_yaml_busbw && group_type == MockNccl::GroupType::DP_EP && nranks > 1){
       if(tp_size * ep_size <= gpus_per_server){
         float _temp_nics_per_server = nics_per_server / (tp_size * ep_size);
         uint32_t _temp_gpus_per_server = gpus_per_server / (tp_size * ep_size);
@@ -1013,7 +1044,7 @@ Tick Layer::compute_time(
         float _temp_nics_per_server = nics_per_server / gpus_per_server;
         result = cal_busbw(gpu_type,nvlink_bw,bw_per_nic,_temp_nics_per_server,nranks,coll_type,1,nic_type);
       }
-    }else{
+    }else if (!use_yaml_busbw){
       
       comp_time = 0;
       return comp_time;
