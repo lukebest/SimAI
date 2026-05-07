@@ -147,8 +147,24 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
                                           request->flowTag);
     if (g_granularity_controller->ShouldReschedule(request->flowTag)) {
-      // Task 6 captures boundary demand only; scheduler handoff is Task 7.
-      (void)g_granularity_controller->BuildDemandMatrix();
+      auto demand = g_granularity_controller->BuildDemandMatrix();
+      auto generatedSchedule = calendar::BuildCalendarSchedule(
+          demand, calendar_algorithm, calendar_frame_slots);
+      ns3::CalendarSchedule schedule;
+      for (const auto& entry : generatedSchedule.entries) {
+        ns3::CalendarScheduleEntry ns3Entry;
+        ns3Entry.permutation = entry.permutation;
+        ns3Entry.slots = entry.slots;
+        schedule.entries.push_back(ns3Entry);
+      }
+      for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
+        Ptr<CalendarSwitchNode> calendarSwitch =
+            DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
+        if (calendarSwitch) {
+          calendarSwitch->LoadSchedule(schedule, calendar_slot_ns,
+                                       calendar_frame_slots);
+        }
+      }
     }
   }
   int pg = 3, dport = 100;

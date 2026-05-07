@@ -15,6 +15,15 @@ namespace calendar {
 
 using DemandMatrix = std::vector<std::vector<double>>;
 
+struct CalendarScheduleEntry {
+  std::vector<uint32_t> permutation;
+  uint32_t slots;
+};
+
+struct CalendarSchedule {
+  std::vector<CalendarScheduleEntry> entries;
+};
+
 enum class GranularityMode { OPERATOR, PHASE, CHUNK, PACKET, SLOT };
 
 inline std::string NormalizeGranularityMode(std::string mode) {
@@ -41,6 +50,112 @@ inline GranularityMode ParseGranularityMode(std::string mode) {
     return GranularityMode::SLOT;
   }
   return GranularityMode::OPERATOR;
+}
+
+inline bool HasPositiveDemand(const DemandMatrix& demand) {
+  for (const auto& row : demand) {
+    for (double value : row) {
+      if (value > 0.0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+inline void AppendScheduleEntry(CalendarSchedule* schedule,
+                                std::vector<uint32_t> permutation) {
+  if (schedule == nullptr) {
+    return;
+  }
+  if (!schedule->entries.empty() &&
+      schedule->entries.back().permutation == permutation) {
+    schedule->entries.back().slots++;
+    return;
+  }
+  schedule->entries.push_back({std::move(permutation), 1});
+}
+
+inline std::vector<uint32_t> BuildRoundRobinPermutation(uint32_t radix,
+                                                        uint32_t slot) {
+  std::vector<uint32_t> permutation(radix, 0);
+  if (radix == 0) {
+    return permutation;
+  }
+  const uint32_t rotation = radix == 1 ? 0 : (slot % (radix - 1)) + 1;
+  for (uint32_t in = 0; in < radix; ++in) {
+    permutation[in] = (in + rotation) % radix;
+  }
+  return permutation;
+}
+
+inline std::vector<uint32_t> BuildDemandAwarePermutation(
+    std::vector<std::vector<double>>* residual, uint32_t fallback_slot) {
+  const uint32_t radix = static_cast<uint32_t>(residual->size());
+  std::vector<uint32_t> permutation =
+      BuildRoundRobinPermutation(radix, fallback_slot);
+  std::vector<bool> usedIn(radix, false);
+  std::vector<bool> usedOut(radix, false);
+
+  for (uint32_t matched = 0; matched < radix; ++matched) {
+    double bestWeight = 0.0;
+    uint32_t bestIn = radix;
+    uint32_t bestOut = radix;
+    for (uint32_t in = 0; in < radix; ++in) {
+      if (usedIn[in]) {
+        continue;
+      }
+      for (uint32_t out = 0; out < (*residual)[in].size(); ++out) {
+        if (out >= radix || usedOut[out] || in == out) {
+          continue;
+        }
+        if ((*residual)[in][out] > bestWeight) {
+          bestWeight = (*residual)[in][out];
+          bestIn = in;
+          bestOut = out;
+        }
+      }
+    }
+    if (bestIn == radix) {
+      break;
+    }
+    permutation[bestIn] = bestOut;
+    usedIn[bestIn] = true;
+    usedOut[bestOut] = true;
+    (*residual)[bestIn][bestOut] =
+        std::max(0.0, (*residual)[bestIn][bestOut] - 1.0);
+  }
+
+  return permutation;
+}
+
+inline CalendarSchedule BuildCalendarSchedule(const DemandMatrix& demand,
+                                              std::string algorithm,
+                                              uint32_t frame_slots) {
+  CalendarSchedule schedule;
+  if (demand.empty() || frame_slots == 0) {
+    return schedule;
+  }
+
+  const uint32_t radix = static_cast<uint32_t>(demand.size());
+  algorithm = NormalizeGranularityMode(std::move(algorithm));
+  const bool roundRobin = algorithm == "round_robin" || algorithm == "rr";
+  if (roundRobin || !HasPositiveDemand(demand)) {
+    for (uint32_t slot = 0; slot < frame_slots; ++slot) {
+      AppendScheduleEntry(&schedule, BuildRoundRobinPermutation(radix, slot));
+    }
+    return schedule;
+  }
+
+  // The ns-3 integration maps solstice and bvn to deterministic demand-aware
+  // max-weight matching. The standalone scheduler library retains the full
+  // algorithm-specific implementations.
+  std::vector<std::vector<double>> residual = demand;
+  for (uint32_t slot = 0; slot < frame_slots; ++slot) {
+    AppendScheduleEntry(&schedule,
+                        BuildDemandAwarePermutation(&residual, slot));
+  }
+  return schedule;
 }
 
 namespace detail {
