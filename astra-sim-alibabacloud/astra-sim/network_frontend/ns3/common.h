@@ -40,6 +40,7 @@
 #include <ns3/rdma.h>
 #include <ns3/sim-setting.h>
 #include <ns3/switch-node.h>
+#include <ns3/calendar-switch-node.h>
 #include <ns3/nvswitch-node.h>
 #include <atomic>
 
@@ -751,9 +752,15 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
 		if (node_type[i] == 0)
 			n.Add(CreateObject<Node>());
 		else if(node_type[i] == 1){
-			Ptr<SwitchNode> sw = CreateObject<SwitchNode>();
-			n.Add(sw);
-			sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
+			if (enable_calendar_switch) {
+				Ptr<CalendarSwitchNode> sw = CreateObject<CalendarSwitchNode>();
+				n.Add(sw);
+				sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
+			} else {
+				Ptr<SwitchNode> sw = CreateObject<SwitchNode>();
+				n.Add(sw);
+				sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
+			}
 		}else if(node_type[i] == 2){
 			Ptr<NVSwitchNode> sw = CreateObject<NVSwitchNode>();
 			n.Add(sw);
