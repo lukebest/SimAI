@@ -10,9 +10,13 @@ RUN_SINGLE = REPO_ROOT / "scripts/run_single_experiment.sh"
 RUN_STUDY = REPO_ROOT / "scripts/run_calendar_study.sh"
 
 
-def run_script(*args: str) -> subprocess.CompletedProcess[str]:
+def run_script(
+    *args: str, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PATH"] = f"{REPO_ROOT / 'venv/bin'}:{env['PATH']}"
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         args,
         cwd=REPO_ROOT,
@@ -29,6 +33,7 @@ def test_run_single_creates_dry_run_artifacts(tmp_path):
 
     result = run_script(
         str(RUN_SINGLE),
+        "--dry-run",
         "--mode",
         "calendar_switch",
         "--granularity",
@@ -74,6 +79,45 @@ def test_run_single_creates_dry_run_artifacts(tmp_path):
     assert "CALENDAR_GRANULARITY_MODE phase" in conf
     assert "CALENDAR_ALGORITHM bvn" in conf
     assert f"CALENDAR_TRACE_FILE {output_dir}/calendar_trace.csv" in conf
+
+
+def test_run_single_dry_run_skips_existing_simulator(tmp_path):
+    bin_dir = REPO_ROOT / "bin"
+    simulator = bin_dir / "SimAI_simulator"
+    created_fake_simulator = not simulator.exists()
+    marker = tmp_path / "simulator_was_invoked"
+    output_dir = tmp_path / "single"
+
+    if created_fake_simulator:
+        bin_dir.mkdir(exist_ok=True)
+        simulator.write_text(
+            "#!/usr/bin/env bash\n"
+            "touch \"${SIMAI_FAKE_MARKER}\"\n"
+            "echo 'fake simulator should not run' >&2\n"
+            "exit 42\n",
+            encoding="utf-8",
+        )
+        simulator.chmod(0o755)
+
+    try:
+        result = run_script(
+            str(RUN_SINGLE),
+            "--dry-run",
+            "--output-dir",
+            str(output_dir),
+            extra_env={"SIMAI_FAKE_MARKER": str(marker)},
+        )
+    finally:
+        if created_fake_simulator:
+            simulator.unlink(missing_ok=True)
+            try:
+                bin_dir.rmdir()
+            except OSError:
+                pass
+
+    assert "Dry-run mode" in result.stdout
+    assert not marker.exists()
+    assert not (output_dir / "stdout.log").exists()
 
 
 def test_run_calendar_study_dry_run_writes_expected_jobs(tmp_path):

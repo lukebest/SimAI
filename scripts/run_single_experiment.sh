@@ -13,10 +13,12 @@ MSG_BYTES=33554432
 OUTPUT_DIR="${ROOT_DIR}/results/calendar/default"
 SLOT_NS=1000
 FRAME_SLOTS=1024
+DRY_RUN=false
 
 usage() {
     cat <<EOF
 Usage: $0 [options]
+  --dry-run
   --mode packet_switch|calendar_switch
   --granularity operator|phase|chunk|packet|slot
   --algorithm solstice|bvn|round_robin
@@ -53,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --output-dir) require_value "$1" "${2:-}"; OUTPUT_DIR="$2"; shift 2 ;;
         --slot-ns) require_value "$1" "${2:-}"; SLOT_NS="$2"; shift 2 ;;
         --frame-slots) require_value "$1" "${2:-}"; FRAME_SLOTS="$2"; shift 2 ;;
+        --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -150,7 +153,9 @@ echo "[run_single] config=${CONF}"
 echo "[run_single] output=${OUTPUT_DIR}"
 
 SIMULATOR="${ROOT_DIR}/bin/SimAI_simulator"
-if [[ -x "${SIMULATOR}" ]]; then
+if "${DRY_RUN}"; then
+    echo "[run_single] Dry-run mode: metadata and config written."
+elif [[ -x "${SIMULATOR}" ]]; then
     "${SIMULATOR}" \
         --network-conf "${CONF}" \
         --workload "${OUTPUT_DIR}/workload.json" \
