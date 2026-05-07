@@ -19,11 +19,29 @@ IMPL = REPO_ROOT / (
 SWITCH_NODE = REPO_ROOT / (
     "ns-3-alibabacloud/simulation/src/point-to-point/model/switch-node.h"
 )
+CMAKE_LISTS = REPO_ROOT / (
+    "ns-3-alibabacloud/simulation/src/point-to-point/CMakeLists.txt"
+)
 
 
 class TestCalendarSwitchNodeContract:
     def test_header_exists(self):
         assert HEADER.exists(), "calendar-switch-node.h not found"
+
+    def test_point_to_point_build_registers_calendar_switch_node(self):
+        cmake = CMAKE_LISTS.read_text(encoding="utf-8")
+
+        source_files = re.search(
+            r"SOURCE_FILES(?P<body>.*?)HEADER_FILES", cmake, re.DOTALL
+        )
+        header_files = re.search(
+            r"HEADER_FILES(?P<body>.*?)LIBRARIES_TO_LINK", cmake, re.DOTALL
+        )
+
+        assert source_files is not None, "point-to-point CMake missing SOURCE_FILES"
+        assert header_files is not None, "point-to-point CMake missing HEADER_FILES"
+        assert "model/calendar-switch-node.cc" in source_files.group("body")
+        assert "model/calendar-switch-node.h" in header_files.group("body")
 
     def test_extends_switch_node(self):
         code = HEADER.read_text(encoding="utf-8")
