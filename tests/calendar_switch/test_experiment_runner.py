@@ -135,14 +135,14 @@ def test_run_calendar_study_dry_run_writes_expected_jobs(tmp_path):
     jobs_file = results_dir / "jobs.txt"
     jobs = jobs_file.read_text(encoding="utf-8").splitlines()
 
-    assert "Total runs: 384" in result.stdout
-    assert "[DRY-RUN] Would execute 384 runs with parallelism 3" in result.stdout
-    assert len(jobs) == 384
+    assert "Total runs: 864" in result.stdout
+    assert "[DRY-RUN] Would execute 864 runs with parallelism 3" in result.stdout
+    assert len(jobs) == 864
 
     baseline_jobs = [job for job in jobs if "--mode packet_switch" in job]
     calendar_jobs = [job for job in jobs if "--mode calendar_switch" in job]
-    assert len(baseline_jobs) == 24
-    assert len(calendar_jobs) == 360
+    assert len(baseline_jobs) == 54
+    assert len(calendar_jobs) == 810
 
     assert any(
         "--mode packet_switch" in job

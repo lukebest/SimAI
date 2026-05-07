@@ -45,7 +45,17 @@ fi
 
 mkdir -p "${RESULTS_DIR}"
 
-OPERATORS=("allreduce_ring" "allreduce_tree" "allgather" "reduce_scatter")
+OPERATORS=(
+    "allreduce_ring"
+    "allreduce_tree"
+    "allgather"
+    "reduce_scatter"
+    "moe_dispatch"
+    "moe_combine"
+    "alltoall_ep"
+    "rs_ag_fused"
+    "moe_pipeline"
+)
 GRANULARITIES=("operator" "phase" "chunk" "packet" "slot")
 ALGORITHMS=("solstice" "bvn" "round_robin")
 GPU_COUNTS=(8 16)

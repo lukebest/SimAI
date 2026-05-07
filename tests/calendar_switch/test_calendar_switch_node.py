@@ -1,11 +1,14 @@
 """
-Contract tests for CalendarSwitchNode.
+Contract tests for CalendarSwitchNode and calendar study integration.
 
 These tests verify that the ns-3 calendar switch wrapper exposes the expected
 schedule APIs and keeps the initial implementation within the safe Task 5
 boundary: no direct access to SwitchNode private internals.
 """
+import json
 import re
+import subprocess
+import textwrap
 from pathlib import Path
 
 
@@ -31,6 +34,8 @@ GRANULARITY_CONTROLLER = REPO_ROOT / (
 CMAKE_LISTS = REPO_ROOT / (
     "ns-3-alibabacloud/simulation/src/point-to-point/CMakeLists.txt"
 )
+RUN_SINGLE = REPO_ROOT / "scripts/run_single_experiment.sh"
+RUN_STUDY = REPO_ROOT / "scripts/run_calendar_study.sh"
 
 
 class TestCalendarSwitchNodeContract:
@@ -283,6 +288,68 @@ class TestCalendarSwitchNodeContract:
         assert "demand" in code
         assert "CalendarSchedule" in code
 
+    def test_calendar_algorithm_selection_produces_distinct_schedules(self, tmp_path):
+        source = tmp_path / "calendar_algorithm_check.cc"
+        binary = tmp_path / "calendar_algorithm_check"
+        source.write_text(
+            textwrap.dedent(
+                f"""
+                #include <iostream>
+                #include <sstream>
+                #include <string>
+
+                #include "{GRANULARITY_CONTROLLER}"
+
+                std::string Summarize(const calendar::CalendarSchedule& schedule) {{
+                  std::ostringstream out;
+                  for (const auto& entry : schedule.entries) {{
+                    out << entry.slots << ":";
+                    for (uint32_t dst : entry.permutation) {{
+                      out << dst << ",";
+                    }}
+                    out << ";";
+                  }}
+                  return out.str();
+                }}
+
+                int main() {{
+                  calendar::DemandMatrix demand = {{
+                      {{0.0, 12.0, 3.0, 0.0}},
+                      {{0.0, 0.0, 10.0, 2.0}},
+                      {{5.0, 0.0, 0.0, 9.0}},
+                      {{8.0, 1.0, 4.0, 0.0}},
+                  }};
+                  auto solstice = calendar::BuildCalendarSchedule(demand, "solstice", 8);
+                  auto bvn = calendar::BuildCalendarSchedule(demand, "bvn", 8);
+                  auto rr = calendar::BuildCalendarSchedule(demand, "round_robin", 8);
+                  std::cout << "solstice=" << Summarize(solstice) << "\\n";
+                  std::cout << "bvn=" << Summarize(bvn) << "\\n";
+                  std::cout << "round_robin=" << Summarize(rr) << "\\n";
+                  return 0;
+                }}
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        subprocess.run(
+            ["g++", "-std=c++17", str(source), "-o", str(binary)],
+            check=True,
+            cwd=REPO_ROOT,
+        )
+        result = subprocess.run(
+            [str(binary)],
+            check=True,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+        )
+        summaries = dict(line.split("=", 1) for line in result.stdout.strip().splitlines())
+
+        assert set(summaries) == {"solstice", "bvn", "round_robin"}
+        assert summaries["solstice"] != summaries["bvn"]
+        assert len(set(summaries.values())) >= 2
+
     def test_does_not_copy_private_switch_node_internals(self):
         code = IMPL.read_text(encoding="utf-8")
 
@@ -295,3 +362,105 @@ class TestCalendarSwitchNodeContract:
             "SwitchSend",
         ]:
             assert private_member not in code
+
+
+class TestCalendarStudyRunner:
+    def test_run_single_supports_moe_and_fused_dry_run_workloads(self, tmp_path):
+        for operator in ["moe_dispatch", "moe_combine", "alltoall_ep", "rs_ag_fused", "moe_pipeline"]:
+            output_dir = tmp_path / operator
+            subprocess.run(
+                [
+                    "bash",
+                    str(RUN_SINGLE),
+                    "--dry-run",
+                    "--operator",
+                    operator,
+                    "--gpus",
+                    "4",
+                    "--msg-bytes",
+                    "1048576",
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                check=True,
+                cwd=REPO_ROOT,
+            )
+
+            workload = json.loads((output_dir / "workload.json").read_text(encoding="utf-8"))
+            e2e_times = json.loads((output_dir / "e2e_times.json").read_text(encoding="utf-8"))
+            assert e2e_times == []
+            assert workload["operator"] == operator
+            assert workload["num_gpus"] == 4
+            assert "phases" in workload or "demand_matrix" in workload
+
+    def test_run_calendar_study_sweep_includes_moe_and_fused_operators(self, tmp_path):
+        results_dir = tmp_path / "study"
+        subprocess.run(
+            [
+                "bash",
+                str(RUN_STUDY),
+                "--dry-run",
+                "--results-dir",
+                str(results_dir),
+            ],
+            check=True,
+            cwd=REPO_ROOT,
+        )
+
+        jobs = (results_dir / "jobs.txt").read_text(encoding="utf-8")
+        for operator in [
+            "allreduce_ring",
+            "allreduce_tree",
+            "allgather",
+            "reduce_scatter",
+            "moe_dispatch",
+            "moe_combine",
+            "alltoall_ep",
+            "rs_ag_fused",
+            "moe_pipeline",
+        ]:
+            assert f"--operator {operator}" in jobs
+
+    def test_run_single_extracts_e2e_times_from_simulator_stdout(self, tmp_path):
+        simulator = REPO_ROOT / "bin/SimAI_simulator"
+        original = simulator.read_bytes() if simulator.exists() else None
+        simulator.parent.mkdir(parents=True, exist_ok=True)
+        simulator.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                echo "warmup e2e_us=10.5"
+                echo "E2E_US,20"
+                echo '{"e2e_us": 30.25}'
+                """
+            ),
+            encoding="utf-8",
+        )
+        simulator.chmod(0o755)
+
+        output_dir = tmp_path / "real_run"
+        try:
+            subprocess.run(
+                [
+                    "bash",
+                    str(RUN_SINGLE),
+                    "--operator",
+                    "allreduce_ring",
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                check=True,
+                cwd=REPO_ROOT,
+            )
+        finally:
+            if original is None:
+                simulator.unlink(missing_ok=True)
+                try:
+                    simulator.parent.rmdir()
+                except OSError:
+                    pass
+            else:
+                simulator.write_bytes(original)
+
+        e2e_times = json.loads((output_dir / "e2e_times.json").read_text(encoding="utf-8"))
+        assert e2e_times == [10.5, 20.0, 30.25]

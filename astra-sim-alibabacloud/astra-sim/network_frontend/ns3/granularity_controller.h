@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <string>
 #include <type_traits>
@@ -129,6 +131,251 @@ inline std::vector<uint32_t> BuildDemandAwarePermutation(
   return permutation;
 }
 
+inline double SumPositiveDemand(const DemandMatrix& demand) {
+  double total = 0.0;
+  for (const auto& row : demand) {
+    for (double value : row) {
+      if (value > 0.0) {
+        total += value;
+      }
+    }
+  }
+  return total;
+}
+
+inline DemandMatrix BuildSquareResidual(const DemandMatrix& demand,
+                                        uint32_t radix) {
+  DemandMatrix residual(radix, std::vector<double>(radix, 0.0));
+  for (uint32_t in = 0; in < radix; ++in) {
+    if (in >= demand.size()) {
+      continue;
+    }
+    const uint32_t rowSize = static_cast<uint32_t>(demand[in].size());
+    for (uint32_t out = 0; out < radix && out < rowSize; ++out) {
+      if (in != out && demand[in][out] > 0.0) {
+        residual[in][out] = demand[in][out];
+      }
+    }
+  }
+  return residual;
+}
+
+inline std::vector<uint32_t> BuildGreedyMaxWeightMatching(
+    const DemandMatrix& residual, uint32_t fallback_slot,
+    std::vector<std::pair<uint32_t, uint32_t>>* matches) {
+  const uint32_t radix = static_cast<uint32_t>(residual.size());
+  std::vector<uint32_t> permutation =
+      BuildRoundRobinPermutation(radix, fallback_slot);
+  std::vector<bool> usedIn(radix, false);
+  std::vector<bool> usedOut(radix, false);
+  if (matches != nullptr) {
+    matches->clear();
+  }
+
+  for (uint32_t matched = 0; matched < radix; ++matched) {
+    double bestWeight = 0.0;
+    uint32_t bestIn = radix;
+    uint32_t bestOut = radix;
+    for (uint32_t in = 0; in < radix; ++in) {
+      if (usedIn[in]) {
+        continue;
+      }
+      for (uint32_t out = 0; out < radix; ++out) {
+        if (usedOut[out] || in == out || residual[in][out] <= bestWeight) {
+          continue;
+        }
+        bestWeight = residual[in][out];
+        bestIn = in;
+        bestOut = out;
+      }
+    }
+    if (bestIn == radix) {
+      break;
+    }
+    permutation[bestIn] = bestOut;
+    usedIn[bestIn] = true;
+    usedOut[bestOut] = true;
+    if (matches != nullptr) {
+      matches->push_back(std::make_pair(bestIn, bestOut));
+    }
+  }
+
+  return permutation;
+}
+
+inline uint32_t AllocateSlotsFromWeight(double weight, uint32_t remainingSlots) {
+  if (remainingSlots == 0 || weight <= 0.0) {
+    return 0;
+  }
+  const uint32_t rounded =
+      static_cast<uint32_t>(std::max(1.0, std::round(weight)));
+  return std::min(remainingSlots, rounded);
+}
+
+inline CalendarSchedule BuildSolsticeSchedule(const DemandMatrix& demand,
+                                              uint32_t frame_slots) {
+  CalendarSchedule schedule;
+  const uint32_t radix = static_cast<uint32_t>(demand.size());
+  DemandMatrix residual = BuildSquareResidual(demand, radix);
+  const double totalDemand = SumPositiveDemand(residual);
+  if (totalDemand <= 0.0) {
+    for (uint32_t slot = 0; slot < frame_slots; ++slot) {
+      AppendScheduleEntry(&schedule, BuildRoundRobinPermutation(radix, slot));
+    }
+    return schedule;
+  }
+
+  const double demandToSlots = static_cast<double>(frame_slots) / totalDemand;
+  uint32_t emittedSlots = 0;
+  while (emittedSlots < frame_slots && HasPositiveDemand(residual)) {
+    std::vector<std::pair<uint32_t, uint32_t>> matches;
+    std::vector<uint32_t> permutation =
+        BuildGreedyMaxWeightMatching(residual, emittedSlots, &matches);
+    if (matches.empty()) {
+      break;
+    }
+
+    double bottleneck = std::numeric_limits<double>::max();
+    for (const auto& match : matches) {
+      bottleneck = std::min(bottleneck, residual[match.first][match.second]);
+    }
+    const uint32_t slots =
+        AllocateSlotsFromWeight(bottleneck * demandToSlots,
+                                frame_slots - emittedSlots);
+    if (slots == 0) {
+      break;
+    }
+    for (uint32_t slot = 0; slot < slots; ++slot) {
+      AppendScheduleEntry(&schedule, permutation);
+    }
+    emittedSlots += slots;
+
+    const double consumedDemand = static_cast<double>(slots) / demandToSlots;
+    for (const auto& match : matches) {
+      double& value = residual[match.first][match.second];
+      value = std::max(0.0, value - consumedDemand);
+    }
+  }
+
+  while (emittedSlots < frame_slots) {
+    AppendScheduleEntry(&schedule,
+                        BuildRoundRobinPermutation(radix, emittedSlots));
+    emittedSlots++;
+  }
+  return schedule;
+}
+
+inline void NormalizeResidualSinkhorn(DemandMatrix* residual) {
+  const uint32_t radix = static_cast<uint32_t>(residual->size());
+  for (uint32_t iter = 0; iter < 8; ++iter) {
+    for (uint32_t in = 0; in < radix; ++in) {
+      double rowSum = 0.0;
+      for (uint32_t out = 0; out < radix; ++out) {
+        rowSum += std::max(0.0, (*residual)[in][out]);
+      }
+      if (rowSum <= 0.0) {
+        continue;
+      }
+      for (uint32_t out = 0; out < radix; ++out) {
+        (*residual)[in][out] /= rowSum;
+      }
+    }
+    for (uint32_t out = 0; out < radix; ++out) {
+      double colSum = 0.0;
+      for (uint32_t in = 0; in < radix; ++in) {
+        colSum += std::max(0.0, (*residual)[in][out]);
+      }
+      if (colSum <= 0.0) {
+        continue;
+      }
+      for (uint32_t in = 0; in < radix; ++in) {
+        (*residual)[in][out] /= colSum;
+      }
+    }
+  }
+}
+
+inline std::vector<uint32_t> BuildBvnActiveMatching(
+    const DemandMatrix& residual, uint32_t fallback_slot,
+    std::vector<std::pair<uint32_t, uint32_t>>* matches) {
+  const uint32_t radix = static_cast<uint32_t>(residual.size());
+  std::vector<uint32_t> permutation =
+      BuildRoundRobinPermutation(radix, fallback_slot);
+  std::vector<bool> usedOut(radix, false);
+  if (matches != nullptr) {
+    matches->clear();
+  }
+
+  for (uint32_t in = 0; in < radix; ++in) {
+    double bestWeight = 0.0;
+    uint32_t bestOut = radix;
+    for (uint32_t out = 0; out < radix; ++out) {
+      if (in == out || usedOut[out] || residual[in][out] <= bestWeight) {
+        continue;
+      }
+      bestWeight = residual[in][out];
+      bestOut = out;
+    }
+    if (bestOut == radix) {
+      continue;
+    }
+    permutation[in] = bestOut;
+    usedOut[bestOut] = true;
+    if (matches != nullptr) {
+      matches->push_back(std::make_pair(in, bestOut));
+    }
+  }
+
+  return permutation;
+}
+
+inline CalendarSchedule BuildBvnSchedule(const DemandMatrix& demand,
+                                         uint32_t frame_slots) {
+  CalendarSchedule schedule;
+  const uint32_t radix = static_cast<uint32_t>(demand.size());
+  DemandMatrix residual = BuildSquareResidual(demand, radix);
+  NormalizeResidualSinkhorn(&residual);
+
+  uint32_t emittedSlots = 0;
+  while (emittedSlots < frame_slots && HasPositiveDemand(residual)) {
+    std::vector<std::pair<uint32_t, uint32_t>> matches;
+    std::vector<uint32_t> permutation =
+        BuildBvnActiveMatching(residual, emittedSlots, &matches);
+    if (matches.empty()) {
+      break;
+    }
+
+    double minResidual = std::numeric_limits<double>::max();
+    for (const auto& match : matches) {
+      minResidual = std::min(minResidual, residual[match.first][match.second]);
+    }
+    const uint32_t slots =
+        AllocateSlotsFromWeight(minResidual * static_cast<double>(frame_slots),
+                                frame_slots - emittedSlots);
+    if (slots == 0) {
+      break;
+    }
+    for (uint32_t slot = 0; slot < slots; ++slot) {
+      AppendScheduleEntry(&schedule, permutation);
+    }
+    emittedSlots += slots;
+
+    const double consumed = static_cast<double>(slots) /
+                            static_cast<double>(frame_slots);
+    for (const auto& match : matches) {
+      double& value = residual[match.first][match.second];
+      value = std::max(0.0, value - consumed);
+    }
+  }
+
+  while (emittedSlots < frame_slots) {
+    AppendScheduleEntry(&schedule,
+                        BuildRoundRobinPermutation(radix, emittedSlots));
+    emittedSlots++;
+  }
+  return schedule;
+}
+
 inline CalendarSchedule BuildCalendarSchedule(const DemandMatrix& demand,
                                               std::string algorithm,
                                               uint32_t frame_slots) {
@@ -147,15 +394,13 @@ inline CalendarSchedule BuildCalendarSchedule(const DemandMatrix& demand,
     return schedule;
   }
 
-  // The ns-3 integration maps solstice and bvn to deterministic demand-aware
-  // max-weight matching. The standalone scheduler library retains the full
-  // algorithm-specific implementations.
-  std::vector<std::vector<double>> residual = demand;
-  for (uint32_t slot = 0; slot < frame_slots; ++slot) {
-    AppendScheduleEntry(&schedule,
-                        BuildDemandAwarePermutation(&residual, slot));
+  if (algorithm == "bvn") {
+    return BuildBvnSchedule(demand, frame_slots);
   }
-  return schedule;
+  if (algorithm == "solstice") {
+    return BuildSolsticeSchedule(demand, frame_slots);
+  }
+  return BuildSolsticeSchedule(demand, frame_slots);
 }
 
 namespace detail {
