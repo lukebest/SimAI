@@ -182,6 +182,23 @@ class TestSolsticeScheduler:
 
         assert result.entries[0].permutation == [2, 0, 1]
 
+    def test_exact_matching_handles_n21_without_greedy_fallback(self):
+        n = 21
+        demand_data = np.zeros((n, n))
+        demand_data[0][0] = 37
+        demand_data[0][1] = 22
+        demand_data[1][0] = 22
+        demand = DemandMatrix(demand_data)
+        sched = SolsticeScheduler(frame_slots=100, max_iterations=1)
+
+        result = sched.compute(demand)
+
+        matching_weight = sum(
+            demand_data[row][result.entries[0].permutation[row]]
+            for row in range(n)
+        )
+        assert matching_weight == 44
+
     def test_half_slot_rounding_uses_half_up(self):
         demand = DemandMatrix(
             np.array(
@@ -313,6 +330,27 @@ class TestSolsticeScheduler:
                       exact_schedule.entries[0].permutation !=
                           std::vector<uint32_t>({2, 0, 1})) {
                     std::cerr << "exact matching did not maximize weight\\n";
+                    return 1;
+                  }
+
+                  calendar::DemandMatrix large_exact(21, std::vector<double>(21, 0.0));
+                  large_exact[0][0] = 37.0;
+                  large_exact[0][1] = 22.0;
+                  large_exact[1][0] = 22.0;
+                  const calendar::Schedule large_exact_schedule =
+                      one_iter.compute(large_exact);
+                  if (large_exact_schedule.entries.empty()) {
+                    std::cerr << "21x21 demand should produce entries\\n";
+                    return 1;
+                  }
+                  double large_exact_weight = 0.0;
+                  for (uint32_t row = 0; row < 21; ++row) {
+                    large_exact_weight +=
+                        large_exact[row][large_exact_schedule.entries[0].permutation[row]];
+                  }
+                  if (large_exact_weight != 44.0) {
+                    std::cerr << "21x21 matching weight was "
+                              << large_exact_weight << "\\n";
                     return 1;
                   }
 

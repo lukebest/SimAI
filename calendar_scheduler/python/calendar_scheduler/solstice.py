@@ -5,69 +5,71 @@ import math
 from .types import DemandMatrix, Schedule, ScheduleEntry
 
 
-def _greedy_matching(residual) -> list[int]:
-    n = residual.shape[0]
-    permutation = [-1] * n
-    used_columns: set[int] = set()
-
-    cells = [
-        (float(residual[row][column]), row, column)
-        for row in range(n)
-        for column in range(n)
-        if residual[row][column] > 0
-    ]
-    cells.sort(key=lambda cell: (-cell[0], cell[1], cell[2]))
-
-    for _weight, row, column in cells:
-        if permutation[row] != -1 or column in used_columns:
-            continue
-        permutation[row] = column
-        used_columns.add(column)
-        if len(used_columns) == n:
-            break
-
-    remaining_columns = [column for column in range(n) if column not in used_columns]
-    next_remaining = 0
-    for row in range(n):
-        if permutation[row] == -1:
-            permutation[row] = remaining_columns[next_remaining]
-            next_remaining += 1
-
-    return permutation
-
-
 def _max_weight_matching(residual) -> list[int]:
     n = residual.shape[0]
-    if n > 20:
-        # Bitmask DP is exponential; large exploratory runs keep a deterministic
-        # fallback rather than exhausting memory.
-        return _greedy_matching(residual)
+    max_weight = max(
+        float(residual[row][column])
+        for row in range(n)
+        for column in range(n)
+    )
+    costs = [
+        [max_weight - float(residual[row][column]) for column in range(n)]
+        for row in range(n)
+    ]
 
-    state_count = 1 << n
-    scores = [float("-inf")] * state_count
-    parent_columns = [-1] * state_count
-    parent_masks = [-1] * state_count
-    scores[0] = 0.0
+    potentials_rows = [0.0] * (n + 1)
+    potentials_cols = [0.0] * (n + 1)
+    matched_rows = [0] * (n + 1)
+    previous_cols = [0] * (n + 1)
 
-    for mask in range(state_count):
-        row = mask.bit_count()
-        if row >= n or scores[mask] == float("-inf"):
-            continue
-        for column in range(n):
-            if mask & (1 << column):
-                continue
-            next_mask = mask | (1 << column)
-            candidate = scores[mask] + float(residual[row][column])
-            if candidate > scores[next_mask] + 1e-12:
-                scores[next_mask] = candidate
-                parent_columns[next_mask] = column
-                parent_masks[next_mask] = mask
+    for row in range(1, n + 1):
+        matched_rows[0] = row
+        col0 = 0
+        min_values = [float("inf")] * (n + 1)
+        used_cols = [False] * (n + 1)
+
+        while True:
+            used_cols[col0] = True
+            row0 = matched_rows[col0]
+            delta = float("inf")
+            col1 = 0
+
+            for col in range(1, n + 1):
+                if used_cols[col]:
+                    continue
+                current = (
+                    costs[row0 - 1][col - 1]
+                    - potentials_rows[row0]
+                    - potentials_cols[col]
+                )
+                if current < min_values[col]:
+                    min_values[col] = current
+                    previous_cols[col] = col0
+                if min_values[col] < delta:
+                    delta = min_values[col]
+                    col1 = col
+
+            for col in range(n + 1):
+                if used_cols[col]:
+                    potentials_rows[matched_rows[col]] += delta
+                    potentials_cols[col] -= delta
+                else:
+                    min_values[col] -= delta
+
+            col0 = col1
+            if matched_rows[col0] == 0:
+                break
+
+        while True:
+            col1 = previous_cols[col0]
+            matched_rows[col0] = matched_rows[col1]
+            col0 = col1
+            if col0 == 0:
+                break
 
     permutation = [0] * n
-    mask = state_count - 1
-    for row in range(n - 1, -1, -1):
-        permutation[row] = parent_columns[mask]
-        mask = parent_masks[mask]
+    for col in range(1, n + 1):
+        permutation[matched_rows[col] - 1] = col - 1
 
     return permutation
 

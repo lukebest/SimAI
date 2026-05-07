@@ -19,123 +19,86 @@ double residual_total(const DemandMatrix& residual) {
   return total;
 }
 
-uint32_t count_bits(uint64_t value) {
-  uint32_t count = 0;
-  while (value != 0) {
-    count += static_cast<uint32_t>(value & 1u);
-    value >>= 1u;
-  }
-  return count;
-}
-
-std::vector<uint32_t> greedy_matching(const DemandMatrix& residual, uint32_t n) {
-  struct Cell {
-    double weight;
-    uint32_t row;
-    uint32_t column;
-  };
-
-  std::vector<Cell> cells;
-  cells.reserve(static_cast<std::size_t>(n) * n);
-  for (uint32_t row = 0; row < n; ++row) {
-    for (uint32_t column = 0; column < n; ++column) {
-      if (residual[row][column] > 0.0) {
-        cells.push_back({residual[row][column], row, column});
-      }
-    }
-  }
-
-  std::sort(cells.begin(), cells.end(), [](const Cell& lhs, const Cell& rhs) {
-    if (lhs.weight != rhs.weight) {
-      return lhs.weight > rhs.weight;
-    }
-    if (lhs.row != rhs.row) {
-      return lhs.row < rhs.row;
-    }
-    return lhs.column < rhs.column;
-  });
-
-  std::vector<uint32_t> permutation(n, std::numeric_limits<uint32_t>::max());
-  std::vector<bool> used_columns(n, false);
-  uint32_t used_count = 0;
-
-  for (const Cell& cell : cells) {
-    if (permutation[cell.row] != std::numeric_limits<uint32_t>::max() ||
-        used_columns[cell.column]) {
-      continue;
-    }
-    permutation[cell.row] = cell.column;
-    used_columns[cell.column] = true;
-    ++used_count;
-    if (used_count == n) {
-      break;
-    }
-  }
-
-  std::vector<uint32_t> remaining_columns;
-  remaining_columns.reserve(n - used_count);
-  for (uint32_t column = 0; column < n; ++column) {
-    if (!used_columns[column]) {
-      remaining_columns.push_back(column);
-    }
-  }
-
-  std::size_t next_remaining = 0;
-  for (uint32_t row = 0; row < n; ++row) {
-    if (permutation[row] == std::numeric_limits<uint32_t>::max()) {
-      permutation[row] = remaining_columns[next_remaining];
-      ++next_remaining;
-    }
-  }
-
-  return permutation;
-}
-
 }  // namespace
 
 std::vector<uint32_t> SolsticeScheduler::max_weight_matching(
     const DemandMatrix& residual, uint32_t n) {
-  if (n > 20) {
-    // Bitmask DP is exponential; large exploratory runs keep a deterministic
-    // fallback rather than exhausting memory.
-    return greedy_matching(residual, n);
+  double max_weight = residual[0][0];
+  for (uint32_t row = 0; row < n; ++row) {
+    for (uint32_t column = 0; column < n; ++column) {
+      max_weight = std::max(max_weight, residual[row][column]);
+    }
   }
 
-  const uint64_t state_count = 1ull << n;
-  std::vector<double> scores(state_count,
-                             -std::numeric_limits<double>::infinity());
-  std::vector<int32_t> parent_columns(state_count, -1);
-  std::vector<uint64_t> parent_masks(state_count, 0);
-  scores[0] = 0.0;
-
-  for (uint64_t mask = 0; mask < state_count; ++mask) {
-    const uint32_t row = count_bits(mask);
-    if (row >= n || scores[mask] == -std::numeric_limits<double>::infinity()) {
-      continue;
-    }
-
+  DemandMatrix costs(n, std::vector<double>(n, 0.0));
+  for (uint32_t row = 0; row < n; ++row) {
     for (uint32_t column = 0; column < n; ++column) {
-      const uint64_t column_mask = 1ull << column;
-      if ((mask & column_mask) != 0) {
-        continue;
+      costs[row][column] = max_weight - residual[row][column];
+    }
+  }
+
+  std::vector<double> potentials_rows(n + 1, 0.0);
+  std::vector<double> potentials_cols(n + 1, 0.0);
+  std::vector<uint32_t> matched_rows(n + 1, 0);
+  std::vector<uint32_t> previous_cols(n + 1, 0);
+
+  for (uint32_t row = 1; row <= n; ++row) {
+    matched_rows[0] = row;
+    uint32_t col0 = 0;
+    std::vector<double> min_values(n + 1,
+                                   std::numeric_limits<double>::infinity());
+    std::vector<bool> used_cols(n + 1, false);
+
+    while (true) {
+      used_cols[col0] = true;
+      const uint32_t row0 = matched_rows[col0];
+      double delta = std::numeric_limits<double>::infinity();
+      uint32_t col1 = 0;
+
+      for (uint32_t col = 1; col <= n; ++col) {
+        if (used_cols[col]) {
+          continue;
+        }
+        const double current = costs[row0 - 1][col - 1] -
+                               potentials_rows[row0] - potentials_cols[col];
+        if (current < min_values[col]) {
+          min_values[col] = current;
+          previous_cols[col] = col0;
+        }
+        if (min_values[col] < delta) {
+          delta = min_values[col];
+          col1 = col;
+        }
       }
 
-      const uint64_t next_mask = mask | column_mask;
-      const double candidate = scores[mask] + residual[row][column];
-      if (candidate > scores[next_mask] + 1e-12) {
-        scores[next_mask] = candidate;
-        parent_columns[next_mask] = static_cast<int32_t>(column);
-        parent_masks[next_mask] = mask;
+      for (uint32_t col = 0; col <= n; ++col) {
+        if (used_cols[col]) {
+          potentials_rows[matched_rows[col]] += delta;
+          potentials_cols[col] -= delta;
+        } else {
+          min_values[col] -= delta;
+        }
+      }
+
+      col0 = col1;
+      if (matched_rows[col0] == 0) {
+        break;
+      }
+    }
+
+    while (true) {
+      const uint32_t col1 = previous_cols[col0];
+      matched_rows[col0] = matched_rows[col1];
+      col0 = col1;
+      if (col0 == 0) {
+        break;
       }
     }
   }
 
   std::vector<uint32_t> permutation(n, 0);
-  uint64_t mask = state_count - 1;
-  for (uint32_t reverse_row = 0; reverse_row < n; ++reverse_row) {
-    const uint32_t row = n - reverse_row - 1;
-    permutation[row] = static_cast<uint32_t>(parent_columns[mask]);
-    mask = parent_masks[mask];
+  for (uint32_t col = 1; col <= n; ++col) {
+    permutation[matched_rows[col] - 1] = col - 1;
   }
 
   return permutation;
