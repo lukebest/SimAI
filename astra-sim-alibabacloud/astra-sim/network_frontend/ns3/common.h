@@ -85,6 +85,13 @@ uint64_t link_down_time = 0;
 uint32_t link_down_A = 0, link_down_B = 0;
 
 uint32_t enable_trace = 1;
+uint32_t enable_calendar_switch = 0;
+uint32_t calendar_slot_ns = 1000;
+uint32_t calendar_frame_slots = 1024;
+std::string calendar_granularity_mode = "operator";
+std::string calendar_algorithm = "solstice";
+uint32_t calendar_trace_enable = 0;
+std::string calendar_trace_file = "";
 
 uint32_t buffer_size = 16;
 
@@ -595,6 +602,20 @@ bool ReadConf(string network_topo,string network_conf) {
         conf >> link_down_time >> link_down_A >> link_down_B;
       } else if (key.compare("ENABLE_TRACE") == 0) {
         conf >> enable_trace;
+      } else if (key.compare("ENABLE_CALENDAR_SWITCH") == 0) {
+        conf >> enable_calendar_switch;
+      } else if (key.compare("CALENDAR_SLOT_NS") == 0) {
+        conf >> calendar_slot_ns;
+      } else if (key.compare("CALENDAR_FRAME_SLOTS") == 0) {
+        conf >> calendar_frame_slots;
+      } else if (key.compare("CALENDAR_GRANULARITY_MODE") == 0) {
+        conf >> calendar_granularity_mode;
+      } else if (key.compare("CALENDAR_ALGORITHM") == 0) {
+        conf >> calendar_algorithm;
+      } else if (key.compare("CALENDAR_TRACE_ENABLE") == 0) {
+        conf >> calendar_trace_enable;
+      } else if (key.compare("CALENDAR_TRACE_FILE") == 0) {
+        conf >> calendar_trace_file;
       } else if (key.compare("KMAX_MAP") == 0) {
         int n_k;
         conf >> n_k;
