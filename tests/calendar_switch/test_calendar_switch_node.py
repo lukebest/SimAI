@@ -16,6 +16,9 @@ HEADER = REPO_ROOT / (
 IMPL = REPO_ROOT / (
     "ns-3-alibabacloud/simulation/src/point-to-point/model/calendar-switch-node.cc"
 )
+SWITCH_NODE = REPO_ROOT / (
+    "ns-3-alibabacloud/simulation/src/point-to-point/model/switch-node.h"
+)
 
 
 class TestCalendarSwitchNodeContract:
@@ -55,6 +58,40 @@ class TestCalendarSwitchNodeContract:
 
         assert "GetCurrentSlotIndex" in code
 
+    def test_switch_node_delegation_hooks_are_virtual(self):
+        code = SWITCH_NODE.read_text(encoding="utf-8")
+
+        assert re.search(
+            r"virtual\s+bool\s+SwitchReceiveFromDevice\s*\("
+            r"\s*Ptr\s*<\s*NetDevice\s*>\s+device,\s*"
+            r"Ptr\s*<\s*Packet\s*>\s+packet,\s*CustomHeader\s*&\s*ch\s*\)",
+            code,
+            re.MULTILINE,
+        )
+        assert re.search(
+            r"virtual\s+void\s+SwitchNotifyDequeue\s*\("
+            r"\s*uint32_t\s+ifIndex,\s*uint32_t\s+qIndex,\s*"
+            r"Ptr\s*<\s*Packet\s*>\s+p\s*\)",
+            code,
+            re.MULTILINE,
+        )
+
+    def test_calendar_switch_marks_delegation_hooks_override(self):
+        code = HEADER.read_text(encoding="utf-8")
+
+        assert re.search(
+            r"bool\s+SwitchReceiveFromDevice\s*\([^;]*CustomHeader\s*&\s*ch\s*\)"
+            r"\s+override\s*;",
+            code,
+            re.DOTALL,
+        )
+        assert re.search(
+            r"void\s+SwitchNotifyDequeue\s*\([^;]*Ptr\s*<\s*Packet\s*>\s+p\s*\)"
+            r"\s+override\s*;",
+            code,
+            re.DOTALL,
+        )
+
     def test_impl_uses_simulator_time_for_current_slot(self):
         code = IMPL.read_text(encoding="utf-8")
 
@@ -66,8 +103,51 @@ class TestCalendarSwitchNodeContract:
     def test_load_schedule_enables_only_non_empty_schedule(self):
         code = IMPL.read_text(encoding="utf-8")
 
-        assert "m_schedule = schedule" in code
-        assert re.search(r"m_calendarEnabled\s*=\s*!\s*m_schedule\.entries\.empty\(\)", code)
+        assert re.search(r"m_calendarEnabled\s*=\s*false", code)
+        assert re.search(r"m_schedule\.entries\.clear\(\)", code)
+        assert re.search(r"m_calendarEnabled\s*=\s*true", code)
+
+    def test_load_schedule_rejects_invalid_timing_parameters(self):
+        code = IMPL.read_text(encoding="utf-8")
+
+        assert re.search(r"slot_ns\s*==\s*0", code)
+        assert re.search(r"frame_slots\s*==\s*0", code)
+        invalid_timing_guard = re.search(
+            r"if\s*\((?P<condition>[^\n]+)\)\s*\{\s*return\s*;", code
+        )
+
+        assert invalid_timing_guard is not None
+        assert "slot_ns == 0" in invalid_timing_guard.group("condition")
+        assert "frame_slots == 0" in invalid_timing_guard.group("condition")
+
+    def test_load_schedule_filters_zero_slot_entries_and_requires_exact_frame(self):
+        code = IMPL.read_text(encoding="utf-8")
+
+        assert re.search(r"entry\.slots\s*==\s*0", code)
+        assert re.search(r"continue\s*;", code)
+        assert "totalSlots" in code
+        assert re.search(r"totalSlots\s*!=\s*m_frameSlots", code)
+        invalid_total_guard = re.search(
+            r"if\s*\((?P<condition>[^\n]*totalSlots\s*!=\s*m_frameSlots[^\n]*)\)"
+            r"\s*\{\s*m_schedule\.entries\.clear\(\);\s*return\s*;",
+            code,
+        )
+
+        assert invalid_total_guard is not None
+
+    def test_get_current_entry_returns_null_for_uncovered_slots(self):
+        code = IMPL.read_text(encoding="utf-8")
+        get_current_entry = re.search(
+            r"const\s+CalendarScheduleEntry\s*\*\s*"
+            r"CalendarSwitchNode::GetCurrentEntry\s*\([^)]*\)\s*const\s*\{(?P<body>.*?)\n\}",
+            code,
+            re.DOTALL,
+        )
+
+        assert get_current_entry is not None
+        body = get_current_entry.group("body")
+        assert "m_schedule.entries.back()" not in body
+        assert re.search(r"return\s+nullptr\s*;", body)
 
     def test_egress_gating_uses_current_entry_permutation(self):
         code = IMPL.read_text(encoding="utf-8")
