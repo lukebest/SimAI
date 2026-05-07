@@ -30,6 +30,7 @@
 #include "ns3/packet.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/qbb-helper.h"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -58,6 +59,16 @@ std::map<std::pair<std::pair<int, int>,int>, AstraSim::ncclFlowTag> receiver_pen
 
 std::map<std::pair<int, std::pair<int, int>>, AstraSim::ncclFlowTag> sender_src_port_map; 
 std::unique_ptr<calendar::GranularityController> g_granularity_controller;
+inline void EnsureGranularityController(uint32_t num_nodes) {
+  if (g_granularity_controller) {
+    return;
+  }
+  if (num_nodes == 0) {
+    num_nodes = 1;
+  }
+  g_granularity_controller = std::make_unique<calendar::GranularityController>(
+      calendar::ParseGranularityMode(calendar_granularity_mode), num_nodes);
+}
 struct task1 {
   int src;
   int dest;
@@ -127,7 +138,12 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     }
   int flow_id = request->flowTag.current_flow_id;
   bool nvls_on = request->flowTag.nvls_on;
-  if (enable_calendar_switch && g_granularity_controller) {
+  if (enable_calendar_switch) {
+    uint32_t observed_nodes = 1;
+    if (src >= 0 && dst >= 0) {
+      observed_nodes = static_cast<uint32_t>(std::max(src, dst) + 1);
+    }
+    EnsureGranularityController(std::max(node_num, observed_nodes));
     g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
                                           request->flowTag);
     if (g_granularity_controller->ShouldReschedule(request->flowTag)) {

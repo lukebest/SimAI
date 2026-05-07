@@ -166,6 +166,10 @@ class GranularityController {
   }
 
  private:
+  bool AllTagFieldsInvalid(int tag_id, int flow_id, int chunk_id) const {
+    return tag_id < 0 && flow_id < 0 && chunk_id < 0;
+  }
+
   bool ShouldRescheduleIds(int tag_id, int flow_id, int chunk_id) {
     if (m_mode == GranularityMode::PACKET) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
@@ -173,6 +177,9 @@ class GranularityController {
     }
     if (m_mode == GranularityMode::SLOT) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
+      return false;
+    }
+    if (AllTagFieldsInvalid(tag_id, flow_id, chunk_id)) {
       return false;
     }
 

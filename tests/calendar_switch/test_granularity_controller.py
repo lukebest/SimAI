@@ -90,45 +90,55 @@ class TestGranularityControllerContract:
                   }
 
                   GranularityController controller(GranularityMode::CHUNK, 3);
+                  if (controller.ShouldReschedule(FlowTag{-1, -1, -1})) {
+                    return 6;
+                  }
                   controller.OnFlowStart(0, 1, 128, FlowTag{10, 20, 1});
                   controller.OnFlowStart(0, 1, 64, FlowTag{10, 20, 1});
                   controller.OnFlowStart(-1, 1, 999, FlowTag{10, 20, 1});
                   controller.OnFlowStart(1, 3, 999, FlowTag{10, 20, 1});
                   const auto demand = controller.BuildDemandMatrix();
                   if (demand.size() != 3 || demand[0].size() != 3) {
-                    return 6;
-                  }
-                  if (demand[0][1] != 192.0) {
                     return 7;
                   }
-                  if (controller.BuildDemandMatrix()[0][1] != 0.0) {
+                  if (demand[0][1] != 192.0) {
                     return 8;
+                  }
+                  if (controller.BuildDemandMatrix()[0][1] != 0.0) {
+                    return 9;
                   }
 
                   if (!controller.ShouldReschedule(FlowTag{10, 20, 1})) {
-                    return 9;
-                  }
-                  if (controller.ShouldReschedule(FlowTag{10, 20, 1})) {
                     return 10;
                   }
-                  if (!controller.ShouldReschedule(FlowTag{10, 20, 2})) {
+                  if (controller.ShouldReschedule(FlowTag{10, 20, 1})) {
                     return 11;
+                  }
+                  if (!controller.ShouldReschedule(FlowTag{10, 20, 2})) {
+                    return 12;
+                  }
+
+                  GranularityController op(GranularityMode::OPERATOR, 2);
+                  GranularityController phase(GranularityMode::PHASE, 2);
+                  if (op.ShouldReschedule(FlowTag{-1, -1, -1}) ||
+                      phase.ShouldReschedule(FlowTag{-1, -1, -1})) {
+                    return 13;
                   }
 
                   GranularityController packet(GranularityMode::PACKET, 2);
                   if (!packet.ShouldReschedule(FlowTag{1, 1, 1}) ||
                       !packet.ShouldReschedule(nullptr)) {
-                    return 12;
+                    return 14;
                   }
 
                   GranularityController slot(GranularityMode::SLOT, 2);
                   if (slot.ShouldReschedule(FlowTag{1, 1, 1})) {
-                    return 13;
+                    return 15;
                   }
 
                   controller.Reset();
                   if (!controller.ShouldReschedule(FlowTag{10, 20, 1})) {
-                    return 14;
+                    return 16;
                   }
                   return 0;
                 }
@@ -170,6 +180,8 @@ class TestGranularityControllerContract:
             r"g_granularity_controller",
             code,
         )
+        assert "EnsureGranularityController" in code
+        assert "std::make_unique<calendar::GranularityController>" in code
 
     def test_send_flow_wires_controller_under_calendar_switch_flag(self):
         code = ENTRY_H.read_text(encoding="utf-8")
@@ -181,6 +193,23 @@ class TestGranularityControllerContract:
         body = code[start:end]
         assert "enable_calendar_switch" in body
         assert "g_granularity_controller" in body
+        assert "EnsureGranularityController" in body
         assert "OnFlowStart" in body
         assert "ShouldReschedule" in body
         assert "BuildDemandMatrix" in body
+
+        ensure_pos = body.find("EnsureGranularityController")
+        on_flow_pos = body.find("OnFlowStart")
+        should_pos = body.find("ShouldReschedule")
+        assert ensure_pos != -1
+        assert ensure_pos < on_flow_pos
+        assert ensure_pos < should_pos
+
+    def test_controller_explicitly_suppresses_all_invalid_boundaries(self):
+        code = HEADER.read_text(encoding="utf-8")
+
+        assert "AllTagFieldsInvalid" in code
+        assert re.search(
+            r"tag_id\s*<\s*0\s*&&\s*flow_id\s*<\s*0\s*&&\s*chunk_id\s*<\s*0",
+            code,
+        )
