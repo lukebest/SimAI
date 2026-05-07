@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
+
 from .types import DemandMatrix, Schedule, ScheduleEntry
 
 
-def _max_weight_matching(residual) -> list[int]:
+def _greedy_matching(residual) -> list[int]:
     n = residual.shape[0]
     permutation = [-1] * n
     used_columns: set[int] = set()
@@ -30,6 +32,42 @@ def _max_weight_matching(residual) -> list[int]:
         if permutation[row] == -1:
             permutation[row] = remaining_columns[next_remaining]
             next_remaining += 1
+
+    return permutation
+
+
+def _max_weight_matching(residual) -> list[int]:
+    n = residual.shape[0]
+    if n > 20:
+        # Bitmask DP is exponential; large exploratory runs keep a deterministic
+        # fallback rather than exhausting memory.
+        return _greedy_matching(residual)
+
+    state_count = 1 << n
+    scores = [float("-inf")] * state_count
+    parent_columns = [-1] * state_count
+    parent_masks = [-1] * state_count
+    scores[0] = 0.0
+
+    for mask in range(state_count):
+        row = mask.bit_count()
+        if row >= n or scores[mask] == float("-inf"):
+            continue
+        for column in range(n):
+            if mask & (1 << column):
+                continue
+            next_mask = mask | (1 << column)
+            candidate = scores[mask] + float(residual[row][column])
+            if candidate > scores[next_mask] + 1e-12:
+                scores[next_mask] = candidate
+                parent_columns[next_mask] = column
+                parent_masks[next_mask] = mask
+
+    permutation = [0] * n
+    mask = state_count - 1
+    for row in range(n - 1, -1, -1):
+        permutation[row] = parent_columns[mask]
+        mask = parent_masks[mask]
 
     return permutation
 
@@ -61,8 +99,8 @@ class SolsticeScheduler:
             if matching_weight <= 1e-9:
                 break
 
-            proportional_slots = round(
-                (matching_weight / original_total_demand) * self.frame_slots
+            proportional_slots = math.floor(
+                (matching_weight / original_total_demand) * self.frame_slots + 0.5
             )
             slots = min(max(1, int(proportional_slots)), remaining_slots)
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 
@@ -18,10 +19,16 @@ double residual_total(const DemandMatrix& residual) {
   return total;
 }
 
-}  // namespace
+uint32_t count_bits(uint64_t value) {
+  uint32_t count = 0;
+  while (value != 0) {
+    count += static_cast<uint32_t>(value & 1u);
+    value >>= 1u;
+  }
+  return count;
+}
 
-std::vector<uint32_t> SolsticeScheduler::max_weight_matching(
-    const DemandMatrix& residual, uint32_t n) {
+std::vector<uint32_t> greedy_matching(const DemandMatrix& residual, uint32_t n) {
   struct Cell {
     double weight;
     uint32_t row;
@@ -79,6 +86,56 @@ std::vector<uint32_t> SolsticeScheduler::max_weight_matching(
       permutation[row] = remaining_columns[next_remaining];
       ++next_remaining;
     }
+  }
+
+  return permutation;
+}
+
+}  // namespace
+
+std::vector<uint32_t> SolsticeScheduler::max_weight_matching(
+    const DemandMatrix& residual, uint32_t n) {
+  if (n > 20) {
+    // Bitmask DP is exponential; large exploratory runs keep a deterministic
+    // fallback rather than exhausting memory.
+    return greedy_matching(residual, n);
+  }
+
+  const uint64_t state_count = 1ull << n;
+  std::vector<double> scores(state_count,
+                             -std::numeric_limits<double>::infinity());
+  std::vector<int32_t> parent_columns(state_count, -1);
+  std::vector<uint64_t> parent_masks(state_count, 0);
+  scores[0] = 0.0;
+
+  for (uint64_t mask = 0; mask < state_count; ++mask) {
+    const uint32_t row = count_bits(mask);
+    if (row >= n || scores[mask] == -std::numeric_limits<double>::infinity()) {
+      continue;
+    }
+
+    for (uint32_t column = 0; column < n; ++column) {
+      const uint64_t column_mask = 1ull << column;
+      if ((mask & column_mask) != 0) {
+        continue;
+      }
+
+      const uint64_t next_mask = mask | column_mask;
+      const double candidate = scores[mask] + residual[row][column];
+      if (candidate > scores[next_mask] + 1e-12) {
+        scores[next_mask] = candidate;
+        parent_columns[next_mask] = static_cast<int32_t>(column);
+        parent_masks[next_mask] = mask;
+      }
+    }
+  }
+
+  std::vector<uint32_t> permutation(n, 0);
+  uint64_t mask = state_count - 1;
+  for (uint32_t reverse_row = 0; reverse_row < n; ++reverse_row) {
+    const uint32_t row = n - reverse_row - 1;
+    permutation[row] = static_cast<uint32_t>(parent_columns[mask]);
+    mask = parent_masks[mask];
   }
 
   return permutation;

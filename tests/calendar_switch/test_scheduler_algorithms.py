@@ -166,6 +166,38 @@ class TestRoundRobinCppSmoke:
 
 
 class TestSolsticeScheduler:
+    def test_exact_matching_beats_greedy_edge_picker(self):
+        demand = DemandMatrix(
+            np.array(
+                [
+                    [0, 10, 8],
+                    [9, 0, 0],
+                    [8, 9, 0],
+                ]
+            )
+        )
+        sched = SolsticeScheduler(frame_slots=100, max_iterations=1)
+
+        result = sched.compute(demand)
+
+        assert result.entries[0].permutation == [2, 0, 1]
+
+    def test_half_slot_rounding_uses_half_up(self):
+        demand = DemandMatrix(
+            np.array(
+                [
+                    [0, 15, 20],
+                    [15, 0, 0],
+                    [13, 17, 0],
+                ]
+            )
+        )
+        sched = SolsticeScheduler(frame_slots=10, max_iterations=1)
+
+        result = sched.compute(demand)
+
+        assert result.entries[0].slots == 7
+
     def test_uniform_demand_covers_all(self):
         n = 4
         demand = DemandMatrix(np.ones((n, n)) * 100 - np.eye(n) * 100)
@@ -218,6 +250,20 @@ class TestSolsticeScheduler:
         assert len(result.entries) == 0
 
     def test_cpp_solstice_matches_reference_contract(self, tmp_path):
+        rounding_demand = DemandMatrix(
+            np.array(
+                [
+                    [0, 15, 20],
+                    [15, 0, 0],
+                    [13, 17, 0],
+                ]
+            )
+        )
+        rounding_schedule = SolsticeScheduler(
+            frame_slots=10,
+            max_iterations=1,
+        ).compute(rounding_demand)
+
         source = tmp_path / "solstice_smoke.cc"
         binary = tmp_path / "solstice_smoke"
         source.write_text(
@@ -258,9 +304,59 @@ class TestSolsticeScheduler:
                     }
                   }
 
+                  calendar::SolsticeScheduler one_iter(100, 1);
+                  calendar::DemandMatrix exact{{0.0, 10.0, 8.0},
+                                               {9.0, 0.0, 0.0},
+                                               {8.0, 9.0, 0.0}};
+                  const calendar::Schedule exact_schedule = one_iter.compute(exact);
+                  if (exact_schedule.entries.empty() ||
+                      exact_schedule.entries[0].permutation !=
+                          std::vector<uint32_t>({2, 0, 1})) {
+                    std::cerr << "exact matching did not maximize weight\\n";
+                    return 1;
+                  }
+
+                  calendar::SolsticeScheduler skew_sched(1000);
+                  calendar::DemandMatrix skew(4, std::vector<double>(4, 0.0));
+                  skew[0][1] = 300.0;
+                  skew[1][0] = 100.0;
+                  skew[2][3] = 100.0;
+                  skew[3][2] = 100.0;
+                  const calendar::Schedule skew_schedule = skew_sched.compute(skew);
+                  uint32_t slots_for_01 = 0;
+                  for (const auto& entry : skew_schedule.entries) {
+                    if (entry.permutation[0] == 1) {
+                      slots_for_01 += entry.slots;
+                    }
+                  }
+                  if (slots_for_01 <= 400) {
+                    std::cerr << "skewed 0->1 demand received "
+                              << slots_for_01 << " slots\\n";
+                    return 1;
+                  }
+
+                  calendar::SolsticeScheduler rounding_sched(10, 1);
+                  calendar::DemandMatrix rounding{{0.0, 15.0, 20.0},
+                                                  {15.0, 0.0, 0.0},
+                                                  {13.0, 17.0, 0.0}};
+                  const calendar::Schedule rounding_schedule =
+                      rounding_sched.compute(rounding);
+                  if (rounding_schedule.entries.empty()) {
+                    std::cerr << "rounding demand should produce entries\\n";
+                    return 1;
+                  }
+                  std::cout << "rounding_first_slots="
+                            << rounding_schedule.entries[0].slots << "\\n";
+
                   calendar::DemandMatrix empty(4, std::vector<double>(4, 0.0));
                   if (!sched.compute(empty).entries.empty()) {
                     std::cerr << "empty demand should produce no entries\\n";
+                    return 1;
+                  }
+
+                  calendar::DemandMatrix ragged{{0.0, 1.0}, {1.0}};
+                  if (!sched.compute(ragged).entries.empty()) {
+                    std::cerr << "ragged demand should produce no entries\\n";
                     return 1;
                   }
 
@@ -295,3 +391,7 @@ class TestSolsticeScheduler:
             check=False,
         )
         assert run_result.returncode == 0, run_result.stderr
+        assert (
+            f"rounding_first_slots={rounding_schedule.entries[0].slots}"
+            in run_result.stdout
+        )
