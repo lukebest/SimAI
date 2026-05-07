@@ -206,19 +206,19 @@ Schedule BvNScheduler::compute(const DemandMatrix& demand) {
     double weight = std::numeric_limits<double>::infinity();
     for (uint32_t row = 0; row < n; ++row) {
       const double residual_weight = residual[row][permutation[row]];
-      if (residual_weight > tolerance_) {
-        weight = std::min(weight, residual_weight);
+      if (residual_weight <= tolerance_) {
+        weight = 0.0;
+        break;
       }
+      weight = std::min(weight, residual_weight);
     }
-    if (!std::isfinite(weight)) {
+    if (!std::isfinite(weight) || weight <= tolerance_) {
       break;
     }
 
     for (uint32_t row = 0; row < n; ++row) {
       const uint32_t column = permutation[row];
-      if (residual[row][column] > tolerance_) {
-        residual[row][column] = std::max(0.0, residual[row][column] - weight);
-      }
+      residual[row][column] = std::max(0.0, residual[row][column] - weight);
     }
 
     for (uint32_t row = 0; row < n; ++row) {

@@ -79,22 +79,20 @@ class BvNScheduler:
                 break
 
             permutation = _max_weight_matching(residual)
-            positive_weights = [
+            assigned_weights = [
                 float(residual[row][permutation[row]])
                 for row in range(n)
-                if float(residual[row][permutation[row]]) > self.tolerance
             ]
-            if not positive_weights:
+            if any(weight <= self.tolerance for weight in assigned_weights):
                 break
 
-            weight = min(positive_weights)
+            weight = min(assigned_weights)
             for row in range(n):
                 column = permutation[row]
-                if residual[row][column] > self.tolerance:
-                    residual[row][column] = max(
-                        0.0,
-                        float(residual[row][column]) - weight,
-                    )
+                residual[row][column] = max(
+                    0.0,
+                    float(residual[row][column]) - weight,
+                )
             residual[residual < self.tolerance] = 0.0
 
             if _is_identity(permutation):

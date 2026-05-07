@@ -491,6 +491,15 @@ class TestBvNScheduler:
 
         assert len(result.entries) == 0
 
+    def test_sparse_single_edge_demand_does_not_allocate_slots(self):
+        demand = DemandMatrix(np.array([[0, 10], [0, 0]]))
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        assert result.total_slots == 0
+        assert result.entries == []
+
     def test_cpp_bvn_matches_reference_contract(self, tmp_path):
         source = tmp_path / "bvn_smoke.cc"
         binary = tmp_path / "bvn_smoke"
@@ -545,6 +554,14 @@ class TestBvNScheduler:
                   calendar::DemandMatrix empty(4, std::vector<double>(4, 0.0));
                   if (!sched.compute(empty).entries.empty()) {
                     std::cerr << "empty demand should produce no entries\\n";
+                    return 1;
+                  }
+
+                  calendar::DemandMatrix sparse{{0.0, 10.0}, {0.0, 0.0}};
+                  const calendar::Schedule sparse_schedule = sched.compute(sparse);
+                  if (!sparse_schedule.entries.empty() ||
+                      sparse_schedule.total_slots() != 0) {
+                    std::cerr << "sparse single-edge demand should produce no slots\\n";
                     return 1;
                   }
 
