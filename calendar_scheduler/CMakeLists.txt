@@ -4,6 +4,7 @@ project(calendar_scheduler LANGUAGES CXX)
 
 add_library(calendar_scheduler STATIC
   src/round_robin_scheduler.cc
+  src/solstice_scheduler.cc
 )
 
 target_include_directories(calendar_scheduler
