@@ -9,6 +9,7 @@ test/log/
 .cur*
 .DS_Store
 venv
+.worktrees/
 *.csv
 *.txt
 simai_trace_output.bin
