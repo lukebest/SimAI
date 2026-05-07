@@ -127,6 +127,37 @@ def test_compute_baseline_ratios_marks_missing_baseline(tmp_path):
     assert ratios[0]["baseline_found"] is False
 
 
+def test_empty_calendar_samples_do_not_produce_ranked_ratio_or_recommendation(tmp_path):
+    _write_run(tmp_path, "baseline", mode="packet_switch", e2e_times=[10.0, 10.0, 10.0])
+    _write_run(tmp_path, "calendar", mode="calendar", e2e_times=[])
+    results = load_experiment_results(tmp_path)
+
+    ratios = compute_baseline_ratios(results)
+    report = generate_report_data(results)
+
+    assert ratios == []
+    assert report["executive_summary"]["skipped_calendar_runs"] == 1
+    assert report["executive_summary"]["best_p95_ratio"] is None
+    assert not any(
+        recommendation.startswith("Best observed calendar configuration")
+        for recommendation in report["recommendations"]
+    )
+
+
+def test_empty_baseline_samples_prevent_ratio_and_are_counted(tmp_path):
+    _write_run(tmp_path, "baseline", mode="packet_switch", e2e_times=[])
+    _write_run(tmp_path, "calendar", mode="calendar", e2e_times=[5.0, 5.0, 5.0])
+    results = load_experiment_results(tmp_path)
+
+    ratios = compute_baseline_ratios(results)
+    report = generate_report_data(results)
+
+    assert ratios == []
+    assert report["executive_summary"]["skipped_calendar_runs"] == 1
+    assert report["executive_summary"]["empty_baseline_matches"] == 1
+    assert report["executive_summary"]["matched_calendar_runs"] == 0
+
+
 def test_generate_report_data_contains_required_sections(tmp_path):
     _write_run(tmp_path, "baseline", mode="packet_switch", e2e_times=[10.0, 10.0, 10.0])
     _write_run(

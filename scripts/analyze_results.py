@@ -96,9 +96,14 @@ def compute_baseline_ratios(results: list[ExperimentResult]) -> list[dict[str, A
     for result in results:
         if not _is_calendar_result(result):
             continue
+        if not result.e2e_times:
+            continue
+
+        baseline = baselines.get(_baseline_key(result))
+        if baseline is not None and not baseline.e2e_times:
+            continue
 
         calendar_stats = compute_e2e_stats(result.e2e_times)
-        baseline = baselines.get(_baseline_key(result))
         baseline_stats = compute_e2e_stats(baseline.e2e_times) if baseline else None
         baseline_p95 = baseline_stats["p95"] if baseline_stats else 0.0
         ratio = (
@@ -146,9 +151,36 @@ def _summarize_recommendations(ratios: list[dict[str, Any]]) -> list[str]:
     return recommendations
 
 
+def _count_skipped_calendar_runs(results: list[ExperimentResult]) -> dict[str, int]:
+    baselines = {
+        _baseline_key(result): result
+        for result in results
+        if result.mode == "packet_switch"
+    }
+    empty_calendar_runs = 0
+    empty_baseline_matches = 0
+
+    for result in results:
+        if not _is_calendar_result(result):
+            continue
+        if not result.e2e_times:
+            empty_calendar_runs += 1
+            continue
+        baseline = baselines.get(_baseline_key(result))
+        if baseline is not None and not baseline.e2e_times:
+            empty_baseline_matches += 1
+
+    return {
+        "skipped_calendar_runs": empty_calendar_runs + empty_baseline_matches,
+        "empty_calendar_runs": empty_calendar_runs,
+        "empty_baseline_matches": empty_baseline_matches,
+    }
+
+
 def generate_report_data(results: list[ExperimentResult]) -> dict[str, Any]:
     ratios = compute_baseline_ratios(results)
     valid_ratio_values = [entry["ratio"] for entry in ratios if entry["ratio"] is not None]
+    skipped_counts = _count_skipped_calendar_runs(results)
     per_operator: dict[str, dict[str, Any]] = {}
 
     for result in results:
@@ -202,6 +234,7 @@ def generate_report_data(results: list[ExperimentResult]) -> dict[str, Any]:
             "missing_baselines": sum(1 for entry in ratios if not entry["baseline_found"]),
             "best_p95_ratio": min(valid_ratio_values) if valid_ratio_values else None,
             "mean_p95_ratio": float(np.mean(valid_ratio_values)) if valid_ratio_values else None,
+            **skipped_counts,
         },
         "per_operator": per_operator,
         "baseline_ratios": ratios,
