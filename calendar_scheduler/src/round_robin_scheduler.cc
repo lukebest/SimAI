@@ -4,8 +4,12 @@ namespace calendar {
 
 Schedule RoundRobinScheduler::compute(const DemandMatrix& demand) {
   Schedule schedule;
+  if (!is_square_matrix(demand)) {
+    return schedule;
+  }
+
   const uint32_t n = matrix_size(demand);
-  if (n <= 1 || total_demand(demand) == 0.0) {
+  if (n <= 1 || total_demand(demand) <= 0.0) {
     return schedule;
   }
 

@@ -1,6 +1,7 @@
 #ifndef CALENDAR_SCHEDULER_CALENDAR_SCHEDULER_H_
 #define CALENDAR_SCHEDULER_CALENDAR_SCHEDULER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <numeric>
 #include <vector>
@@ -36,11 +37,27 @@ class SchedulerBase {
  protected:
   uint32_t frame_slots() const { return frame_slots_; }
 
+  static bool is_square_matrix(const DemandMatrix& demand) {
+    const std::size_t n = demand.size();
+    for (const auto& row : demand) {
+      if (row.size() != n) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   static uint32_t matrix_size(const DemandMatrix& demand) {
+    if (!is_square_matrix(demand)) {
+      return 0;
+    }
     return static_cast<uint32_t>(demand.size());
   }
 
   static double total_demand(const DemandMatrix& demand) {
+    if (!is_square_matrix(demand)) {
+      return 0.0;
+    }
     double total = 0.0;
     for (const auto& row : demand) {
       total = std::accumulate(row.begin(), row.end(), total);
