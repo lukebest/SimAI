@@ -179,6 +179,94 @@ std::vector<uint32_t> BvNScheduler::max_weight_matching(
   return permutation;
 }
 
+std::pair<std::vector<uint32_t>,
+          std::vector<std::pair<uint32_t, uint32_t>>>
+BvNScheduler::active_matching(const DemandMatrix& residual, double tolerance) {
+  const uint32_t n = static_cast<uint32_t>(residual.size());
+  std::vector<uint32_t> active_rows;
+  std::vector<uint32_t> active_columns;
+
+  for (uint32_t row = 0; row < n; ++row) {
+    if (*std::max_element(residual[row].begin(), residual[row].end()) >
+        tolerance) {
+      active_rows.push_back(row);
+    }
+  }
+
+  for (uint32_t column = 0; column < n; ++column) {
+    double max_column_weight = 0.0;
+    for (uint32_t row = 0; row < n; ++row) {
+      max_column_weight = std::max(max_column_weight, residual[row][column]);
+    }
+    if (max_column_weight > tolerance) {
+      active_columns.push_back(column);
+    }
+  }
+
+  std::vector<uint32_t> permutation(n, 0);
+  std::iota(permutation.begin(), permutation.end(), 0);
+  std::vector<std::pair<uint32_t, uint32_t>> matched_edges;
+  if (active_rows.empty() || active_columns.empty()) {
+    return {permutation, matched_edges};
+  }
+
+  const uint32_t matching_size = std::max(
+      static_cast<uint32_t>(active_rows.size()),
+      static_cast<uint32_t>(active_columns.size()));
+  DemandMatrix matching_weights(matching_size,
+                                std::vector<double>(matching_size, 0.0));
+  const double cardinality_bonus = residual_total(residual) + 1.0;
+  for (uint32_t local_row = 0; local_row < active_rows.size(); ++local_row) {
+    const uint32_t row = active_rows[local_row];
+    for (uint32_t local_column = 0; local_column < active_columns.size();
+         ++local_column) {
+      const uint32_t column = active_columns[local_column];
+      const double edge_weight = residual[row][column];
+      if (edge_weight > tolerance) {
+        matching_weights[local_row][local_column] =
+            cardinality_bonus + edge_weight;
+      }
+    }
+  }
+
+  const std::vector<uint32_t> local_permutation =
+      max_weight_matching(matching_weights, matching_size);
+  std::fill(permutation.begin(), permutation.end(), n);
+  std::vector<bool> used_columns(n, false);
+  for (uint32_t local_row = 0; local_row < active_rows.size(); ++local_row) {
+    const uint32_t local_column = local_permutation[local_row];
+    if (local_column >= active_columns.size()) {
+      continue;
+    }
+
+    const uint32_t row = active_rows[local_row];
+    const uint32_t column = active_columns[local_column];
+    if (residual[row][column] <= tolerance) {
+      continue;
+    }
+
+    permutation[row] = column;
+    used_columns[column] = true;
+    matched_edges.push_back({row, column});
+  }
+
+  std::vector<uint32_t> unused_columns;
+  for (uint32_t column = 0; column < n; ++column) {
+    if (!used_columns[column]) {
+      unused_columns.push_back(column);
+    }
+  }
+
+  uint32_t next_unused = 0;
+  for (uint32_t row = 0; row < n; ++row) {
+    if (permutation[row] == n) {
+      permutation[row] = unused_columns[next_unused++];
+    }
+  }
+
+  return {permutation, matched_edges};
+}
+
 Schedule BvNScheduler::compute(const DemandMatrix& demand) {
   Schedule schedule;
   if (!is_square_matrix(demand)) {
@@ -197,28 +285,33 @@ Schedule BvNScheduler::compute(const DemandMatrix& demand) {
   }
 
   uint32_t remaining_slots = frame_slots();
-  for (uint32_t iter = 0; iter < max_iterations_; ++iter) {
+  const uint32_t iteration_limit =
+      max_iterations_ == 0 ? std::max(frame_slots(), n * n * 4)
+                           : max_iterations_;
+  for (uint32_t iter = 0; iter < iteration_limit; ++iter) {
     if (remaining_slots == 0 || residual_total(residual) <= tolerance_) {
       break;
     }
 
-    std::vector<uint32_t> permutation = max_weight_matching(residual, n);
+    const auto matching = active_matching(residual, tolerance_);
+    const std::vector<uint32_t>& permutation = matching.first;
+    const std::vector<std::pair<uint32_t, uint32_t>>& matched_edges =
+        matching.second;
+    if (matched_edges.empty()) {
+      break;
+    }
+
     double weight = std::numeric_limits<double>::infinity();
-    for (uint32_t row = 0; row < n; ++row) {
-      const double residual_weight = residual[row][permutation[row]];
-      if (residual_weight <= tolerance_) {
-        weight = 0.0;
-        break;
-      }
-      weight = std::min(weight, residual_weight);
+    for (const auto& edge : matched_edges) {
+      weight = std::min(weight, residual[edge.first][edge.second]);
     }
     if (!std::isfinite(weight) || weight <= tolerance_) {
       break;
     }
 
-    for (uint32_t row = 0; row < n; ++row) {
-      const uint32_t column = permutation[row];
-      residual[row][column] = std::max(0.0, residual[row][column] - weight);
+    for (const auto& edge : matched_edges) {
+      residual[edge.first][edge.second] =
+          std::max(0.0, residual[edge.first][edge.second] - weight);
     }
 
     for (uint32_t row = 0; row < n; ++row) {

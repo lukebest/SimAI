@@ -436,6 +436,12 @@ class TestSolsticeScheduler:
 
 
 class TestBvNScheduler:
+    @staticmethod
+    def _served_slots(result, row, column):
+        return sum(
+            entry.slots for entry in result.entries if entry.permutation[row] == column
+        )
+
     def test_uniform_demand_produces_valid_schedule(self):
         n = 4
         demand = DemandMatrix(np.ones((n, n)) * 100 - np.eye(n) * 100)
@@ -491,21 +497,67 @@ class TestBvNScheduler:
 
         assert len(result.entries) == 0
 
-    def test_sparse_single_edge_demand_does_not_allocate_slots(self):
-        demand = DemandMatrix(np.array([[0, 10], [0, 0]]))
+    def test_sparse_single_edge_demand_allocates_positive_service(self):
+        demand = DemandMatrix(
+            np.array(
+                [
+                    [0, 10, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                ]
+            )
+        )
         sched = BvNScheduler(frame_slots=1024)
 
         result = sched.compute(demand)
 
-        assert result.total_slots == 0
-        assert result.entries == []
+        assert result.total_slots > 0
+        assert self._served_slots(result, 0, 1) > 0
+
+    def test_sparse_two_node_exchange_allocates_positive_service(self):
+        demand_data = np.zeros((4, 4))
+        demand_data[0][1] = 10
+        demand_data[1][0] = 10
+        demand = DemandMatrix(demand_data)
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        assert result.total_slots > 0
+        assert self._served_slots(result, 0, 1) > 0
+        assert self._served_slots(result, 1, 0) > 0
+
+    def test_dense_high_radix_uses_nearly_full_frame(self):
+        n = 32
+        demand_data = np.random.default_rng(42).uniform(1, 100, (n, n))
+        np.fill_diagonal(demand_data, 0)
+        demand = DemandMatrix(demand_data)
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        assert result.total_slots >= 1010
 
     def test_cpp_bvn_matches_reference_contract(self, tmp_path):
+        equivalence_demand = np.array(
+            [
+                [0, 9, 3, 0],
+                [4, 0, 5, 0],
+                [0, 6, 0, 7],
+                [2, 0, 8, 0],
+            ]
+        )
+        equivalence_schedule = BvNScheduler(frame_slots=128).compute(
+            DemandMatrix(equivalence_demand)
+        )
+
         source = tmp_path / "bvn_smoke.cc"
         binary = tmp_path / "bvn_smoke"
         source.write_text(
             textwrap.dedent(
                 """
+                #include <algorithm>
                 #include <iostream>
                 #include <set>
 
@@ -557,11 +609,58 @@ class TestBvNScheduler:
                     return 1;
                   }
 
-                  calendar::DemandMatrix sparse{{0.0, 10.0}, {0.0, 0.0}};
+                  calendar::DemandMatrix sparse(4, std::vector<double>(4, 0.0));
+                  sparse[0][1] = 10.0;
                   const calendar::Schedule sparse_schedule = sched.compute(sparse);
-                  if (!sparse_schedule.entries.empty() ||
-                      sparse_schedule.total_slots() != 0) {
-                    std::cerr << "sparse single-edge demand should produce no slots\\n";
+                  if (sparse_schedule.entries.empty() ||
+                      sparse_schedule.total_slots() == 0) {
+                    std::cerr << "sparse single-edge demand should produce slots\\n";
+                    return 1;
+                  }
+                  uint32_t sparse_slots = 0;
+                  for (const auto& entry : sparse_schedule.entries) {
+                    if (entry.permutation[0] == 1) {
+                      sparse_slots += entry.slots;
+                    }
+                  }
+                  if (sparse_slots == 0) {
+                    std::cerr << "sparse single-edge demand did not serve 0->1\\n";
+                    return 1;
+                  }
+
+                  calendar::DemandMatrix exchange(4, std::vector<double>(4, 0.0));
+                  exchange[0][1] = 10.0;
+                  exchange[1][0] = 10.0;
+                  const calendar::Schedule exchange_schedule = sched.compute(exchange);
+                  uint32_t exchange_01_slots = 0;
+                  uint32_t exchange_10_slots = 0;
+                  for (const auto& entry : exchange_schedule.entries) {
+                    if (entry.permutation[0] == 1) {
+                      exchange_01_slots += entry.slots;
+                    }
+                    if (entry.permutation[1] == 0) {
+                      exchange_10_slots += entry.slots;
+                    }
+                  }
+                  if (exchange_schedule.total_slots() == 0 ||
+                      exchange_01_slots == 0 || exchange_10_slots == 0) {
+                    std::cerr << "sparse exchange demand should serve both edges\\n";
+                    return 1;
+                  }
+
+                  calendar::DemandMatrix dense(32, std::vector<double>(32, 0.0));
+                  for (uint32_t row = 0; row < 32; ++row) {
+                    for (uint32_t column = 0; column < 32; ++column) {
+                      if (row != column) {
+                        dense[row][column] =
+                            static_cast<double>(((row * 17 + column * 31) % 97) + 1);
+                      }
+                    }
+                  }
+                  const calendar::Schedule dense_schedule = sched.compute(dense);
+                  if (dense_schedule.total_slots() < 1010) {
+                    std::cerr << "dense 32x32 demand only produced "
+                              << dense_schedule.total_slots() << " slots\\n";
                     return 1;
                   }
 
@@ -581,6 +680,30 @@ class TestBvNScheduler:
                       std::cerr << "identity demand emitted identity entry\\n";
                       return 1;
                     }
+                  }
+
+                  calendar::BvNScheduler equivalence_sched(128);
+                  calendar::DemandMatrix equivalence{{0.0, 9.0, 3.0, 0.0},
+                                                     {4.0, 0.0, 5.0, 0.0},
+                                                     {0.0, 6.0, 0.0, 7.0},
+                                                     {2.0, 0.0, 8.0, 0.0}};
+                  const calendar::Schedule equivalence_schedule =
+                      equivalence_sched.compute(equivalence);
+                  std::cout << "equivalence_total="
+                            << equivalence_schedule.total_slots() << "\\n";
+                  const uint32_t equivalence_limit =
+                      std::min<uint32_t>(3, equivalence_schedule.entries.size());
+                  for (uint32_t entry_idx = 0; entry_idx < equivalence_limit;
+                       ++entry_idx) {
+                    const auto& entry = equivalence_schedule.entries[entry_idx];
+                    std::cout << "equivalence_entry=" << entry.slots << ":";
+                    for (uint32_t i = 0; i < entry.permutation.size(); ++i) {
+                      if (i != 0) {
+                        std::cout << ",";
+                      }
+                      std::cout << entry.permutation[i];
+                    }
+                    std::cout << "\\n";
                   }
 
                   return 0;
@@ -614,3 +737,9 @@ class TestBvNScheduler:
             check=False,
         )
         assert run_result.returncode == 0, run_result.stderr
+
+        cpp_lines = run_result.stdout.splitlines()
+        assert f"equivalence_total={equivalence_schedule.total_slots}" in cpp_lines
+        for entry in equivalence_schedule.entries[:3]:
+            permutation = ",".join(str(column) for column in entry.permutation)
+            assert f"equivalence_entry={entry.slots}:{permutation}" in cpp_lines
