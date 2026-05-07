@@ -65,6 +65,7 @@ def generate_moe_demand_matrix(
     demand = np.zeros((num_gpus, num_gpus), dtype=float)
     for src_gpu in range(num_gpus):
         counts = np.bincount(dst_gpus[src_gpu], minlength=num_gpus)
+        counts[src_gpu] = 0
         demand[src_gpu] = counts * token_size
 
     return demand

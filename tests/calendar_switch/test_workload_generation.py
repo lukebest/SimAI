@@ -98,7 +98,23 @@ class TestMoETrafficGeneration:
         )
 
         assert dm.shape == (8, 8)
-        assert dm.sum() == 8 * 512 * 4096
+        assert dm.sum() > 0
+        assert dm.sum() < 8 * 512 * 4096
+
+    @pytest.mark.parametrize("distribution", ["uniform", "zipf", "power_law"])
+    def test_moe_demand_matrices_exclude_local_traffic(self, distribution):
+        dm = generate_moe_demand_matrix(
+            num_gpus=8,
+            num_experts=64,
+            tokens_per_gpu=1024,
+            token_size=4096,
+            distribution=distribution,
+            zipf_s=1.5,
+            seed=7,
+        )
+
+        _assert_square_zero_diagonal(dm, 8)
+        assert dm.sum() > 0
 
     def test_zipf_and_power_law_are_more_skewed_than_uniform(self):
         kwargs = dict(
@@ -179,7 +195,9 @@ class TestFusedWorkloads:
         dispatch = _as_array(wl["phases"][0])
         compute = _as_array(wl["phases"][1])
         combine = _as_array(wl["phases"][2])
-        assert dispatch.sum() == 8 * 512 * 4096
+        _assert_square_zero_diagonal(dispatch, 8)
+        _assert_square_zero_diagonal(combine, 8)
+        assert dispatch.sum() > 0
         assert np.all(compute == 0)
         assert wl["phases"][1]["compute_ns"] == 12345
         assert np.array_equal(combine, dispatch.T)
@@ -224,3 +242,67 @@ def test_generate_workloads_cli_writes_json(tmp_path):
     assert payload["operator"] == "allgather"
     assert payload["num_phases"] == 3
     assert len(payload["phases"]) == 3
+
+
+def test_moe_generator_cli_writes_network_only_json(tmp_path):
+    output_path = tmp_path / "moe.json"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(WORKLOAD_DIR / "moe_traffic_generator.py"),
+            "--num-gpus",
+            "8",
+            "--num-experts",
+            "64",
+            "--tokens-per-gpu",
+            "512",
+            "--token-size",
+            "4096",
+            "--distribution",
+            "zipf",
+            "--output",
+            str(output_path),
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+    )
+
+    demand = np.asarray(json.loads(output_path.read_text(encoding="utf-8")))
+    _assert_square_zero_diagonal(demand, 8)
+    assert demand.sum() > 0
+
+
+def test_fused_moe_pipeline_cli_writes_network_only_json(tmp_path):
+    output_path = tmp_path / "moe_pipeline.json"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(WORKLOAD_DIR / "fused_op_workloads.py"),
+            "--type",
+            "moe_pipeline",
+            "--num-gpus",
+            "8",
+            "--num-experts",
+            "64",
+            "--tokens-per-gpu",
+            "512",
+            "--token-size",
+            "4096",
+            "--distribution",
+            "power_law",
+            "--output",
+            str(output_path),
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+    )
+
+    workload = json.loads(output_path.read_text(encoding="utf-8"))
+    dispatch = np.asarray(workload["phases"][0]["demand_matrix"])
+    combine = np.asarray(workload["phases"][2]["demand_matrix"])
+    _assert_square_zero_diagonal(dispatch, 8)
+    _assert_square_zero_diagonal(combine, 8)
+    assert dispatch.sum() > 0
+    assert np.array_equal(combine, dispatch.T)
