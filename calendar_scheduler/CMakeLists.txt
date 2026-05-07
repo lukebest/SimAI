@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(calendar_scheduler LANGUAGES CXX)
 
 add_library(calendar_scheduler STATIC
+  src/bvn_scheduler.cc
   src/round_robin_scheduler.cc
   src/solstice_scheduler.cc
 )

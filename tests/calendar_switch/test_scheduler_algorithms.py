@@ -433,3 +433,167 @@ class TestSolsticeScheduler:
             f"rounding_first_slots={rounding_schedule.entries[0].slots}"
             in run_result.stdout
         )
+
+
+class TestBvNScheduler:
+    def test_uniform_demand_produces_valid_schedule(self):
+        n = 4
+        demand = DemandMatrix(np.ones((n, n)) * 100 - np.eye(n) * 100)
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        assert 0 < result.total_slots <= 1024
+        for entry in result.entries:
+            assert sorted(entry.permutation) == list(range(n))
+
+    def test_permutation_decomposition_covers_demand(self):
+        demand_data = np.array(
+            [
+                [0, 200, 100, 100],
+                [100, 0, 200, 100],
+                [100, 100, 0, 200],
+                [200, 100, 100, 0],
+            ]
+        )
+        demand = DemandMatrix(demand_data)
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        for row in range(demand.n):
+            for column in range(demand.n):
+                if demand_data[row][column] <= 0:
+                    continue
+                served_slots = sum(
+                    entry.slots
+                    for entry in result.entries
+                    if entry.permutation[row] == column
+                )
+                assert served_slots > 0, f"unserved demand at {row}->{column}"
+
+    def test_identity_entries_excluded(self):
+        n = 4
+        demand = DemandMatrix(np.eye(n) * 100)
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        for entry in result.entries:
+            assert entry.permutation != list(range(n))
+
+    def test_empty_demand(self):
+        n = 4
+        demand = DemandMatrix(np.zeros((n, n)))
+        sched = BvNScheduler(frame_slots=1024)
+
+        result = sched.compute(demand)
+
+        assert len(result.entries) == 0
+
+    def test_cpp_bvn_matches_reference_contract(self, tmp_path):
+        source = tmp_path / "bvn_smoke.cc"
+        binary = tmp_path / "bvn_smoke"
+        source.write_text(
+            textwrap.dedent(
+                """
+                #include <iostream>
+                #include <set>
+
+                #include "bvn_scheduler.h"
+
+                int main() {
+                  calendar::BvNScheduler sched(1024);
+                  calendar::DemandMatrix uniform(4, std::vector<double>(4, 100.0));
+                  for (uint32_t i = 0; i < 4; ++i) {
+                    uniform[i][i] = 0.0;
+                  }
+
+                  const calendar::Schedule schedule = sched.compute(uniform);
+                  if (schedule.entries.empty()) {
+                    std::cerr << "uniform demand should produce entries\\n";
+                    return 1;
+                  }
+                  if (schedule.total_slots() == 0 || schedule.total_slots() > 1024) {
+                    std::cerr << "unexpected total slots "
+                              << schedule.total_slots() << "\\n";
+                    return 1;
+                  }
+                  for (const auto& entry : schedule.entries) {
+                    if (entry.permutation.size() != 4) {
+                      std::cerr << "permutation has wrong size\\n";
+                      return 1;
+                    }
+                    std::set<uint32_t> seen(entry.permutation.begin(),
+                                            entry.permutation.end());
+                    if (seen.size() != 4) {
+                      std::cerr << "permutation is not unique\\n";
+                      return 1;
+                    }
+                    bool identity = true;
+                    for (uint32_t i = 0; i < entry.permutation.size(); ++i) {
+                      if (entry.permutation[i] != i) {
+                        identity = false;
+                      }
+                    }
+                    if (identity) {
+                      std::cerr << "identity permutation should be excluded\\n";
+                      return 1;
+                    }
+                  }
+
+                  calendar::DemandMatrix empty(4, std::vector<double>(4, 0.0));
+                  if (!sched.compute(empty).entries.empty()) {
+                    std::cerr << "empty demand should produce no entries\\n";
+                    return 1;
+                  }
+
+                  calendar::DemandMatrix identity(4, std::vector<double>(4, 0.0));
+                  for (uint32_t i = 0; i < 4; ++i) {
+                    identity[i][i] = 100.0;
+                  }
+                  const calendar::Schedule identity_schedule = sched.compute(identity);
+                  for (const auto& entry : identity_schedule.entries) {
+                    bool is_identity = true;
+                    for (uint32_t i = 0; i < entry.permutation.size(); ++i) {
+                      if (entry.permutation[i] != i) {
+                        is_identity = false;
+                      }
+                    }
+                    if (is_identity) {
+                      std::cerr << "identity demand emitted identity entry\\n";
+                      return 1;
+                    }
+                  }
+
+                  return 0;
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        compile_result = subprocess.run(
+            [
+                "c++",
+                "-std=c++17",
+                "-I",
+                str(REPO_ROOT / "calendar_scheduler" / "include"),
+                str(source),
+                str(REPO_ROOT / "calendar_scheduler" / "src" / "bvn_scheduler.cc"),
+                "-o",
+                str(binary),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert compile_result.returncode == 0, compile_result.stderr
+
+        run_result = subprocess.run(
+            [str(binary)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert run_result.returncode == 0, run_result.stderr
