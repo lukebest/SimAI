@@ -471,7 +471,8 @@ class GranularityController {
         m_hasLast(false),
         m_lastTagId(-1),
         m_lastFlowId(-1),
-        m_lastChunkId(-1) {}
+        m_lastChunkId(-1),
+        m_pendingFlows(0) {}
 
   template <typename TagT>
   void OnFlowStart(int src, int dst, uint64_t size, const TagT& tag) {
@@ -487,6 +488,7 @@ class GranularityController {
 
     m_pendingDemand[std::make_pair(srcNode, dstNode)] +=
         static_cast<double>(size);
+    m_pendingFlows++;
   }
 
   DemandMatrix BuildDemandMatrix() {
@@ -523,6 +525,7 @@ class GranularityController {
     m_lastTagId = -1;
     m_lastFlowId = -1;
     m_lastChunkId = -1;
+    m_pendingFlows = 0;
   }
 
  private:
@@ -531,49 +534,45 @@ class GranularityController {
   }
 
   bool ShouldRescheduleIds(int tag_id, int flow_id, int chunk_id) {
+    const uint32_t flowThreshold = GetFlowThresholdForMode();
+    const bool thresholdReached =
+        flowThreshold > 0 && m_pendingFlows >= flowThreshold;
+
     if (m_mode == GranularityMode::PACKET) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
+      m_pendingFlows = 0;
       return true;
     }
     if (m_mode == GranularityMode::SLOT) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
-      return true;
+      if (thresholdReached) {
+        m_pendingFlows = 0;
+      }
+      return thresholdReached;
     }
     if (AllTagFieldsInvalid(tag_id, flow_id, chunk_id)) {
       // Fallback path for workloads that do not carry boundary tags.
-      // Keep operator mode coarse, and allow finer modes to react per flow.
-      bool changed = !m_hasLast;
-      if (!changed) {
-        switch (m_mode) {
-          case GranularityMode::OPERATOR:
-            changed = false;
-            break;
-          case GranularityMode::PHASE:
-          case GranularityMode::CHUNK:
-            changed = true;
-            break;
-          case GranularityMode::PACKET:
-          case GranularityMode::SLOT:
-            changed = true;
-            break;
-        }
-      }
+      // In this case, rely on flow-count thresholds to approximate boundaries.
+      bool changed = false;
       UpdateLastIds(tag_id, flow_id, chunk_id);
-      return changed;
+      const bool should = changed || thresholdReached;
+      if (should) {
+        m_pendingFlows = 0;
+      }
+      return should;
     }
 
-    bool changed = !m_hasLast;
-    if (!changed) {
+    bool changed = false;
+    if (m_hasLast) {
       switch (m_mode) {
         case GranularityMode::OPERATOR:
-          changed = tag_id != m_lastTagId;
+          changed = false;
           break;
         case GranularityMode::PHASE:
-          changed = tag_id != m_lastTagId || flow_id != m_lastFlowId;
+          changed = false;
           break;
         case GranularityMode::CHUNK:
-          changed = tag_id != m_lastTagId || flow_id != m_lastFlowId ||
-                    chunk_id != m_lastChunkId;
+          changed = chunk_id != m_lastChunkId;
           break;
         case GranularityMode::PACKET:
         case GranularityMode::SLOT:
@@ -582,7 +581,26 @@ class GranularityController {
     }
 
     UpdateLastIds(tag_id, flow_id, chunk_id);
-    return changed;
+    const bool should = changed || thresholdReached;
+    if (should) {
+      m_pendingFlows = 0;
+    }
+    return should;
+  }
+
+  uint32_t GetFlowThresholdForMode() const {
+    const uint32_t n = std::max(1u, m_numNodes);
+    switch (m_mode) {
+      case GranularityMode::OPERATOR:
+        return std::max(1u, n * std::max(1u, n - 1));
+      case GranularityMode::PHASE:
+        return n;
+      case GranularityMode::CHUNK:
+      case GranularityMode::PACKET:
+      case GranularityMode::SLOT:
+        return 1;
+    }
+    return 1;
   }
 
   void UpdateLastIds(int tag_id, int flow_id, int chunk_id) {
@@ -598,6 +616,7 @@ class GranularityController {
   int m_lastTagId;
   int m_lastFlowId;
   int m_lastChunkId;
+  uint32_t m_pendingFlows;
   std::map<std::pair<uint32_t, uint32_t>, double> m_pendingDemand;
 };
 
