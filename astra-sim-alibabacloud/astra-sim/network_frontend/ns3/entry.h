@@ -130,7 +130,7 @@ inline void PollCalendarSwitchMetrics() {
 
   if (!g_switch_metrics_header_written) {
     g_switch_metrics_trace
-        << "sim_ns,switch_id,slot_idx,port_id,q_idx,egress_bytes,"
+        << "sim_ns,switch_id,slot_idx,port_id,egress_bytes,"
            "slot_allowed,slot_blocked,total_allowed,total_blocked\n";
     g_switch_metrics_header_written = true;
   }
@@ -157,14 +157,25 @@ inline void PollCalendarSwitchMetrics() {
     const uint32_t slot_idx = calendarSwitch->GetCurrentSlotIndex();
     const uint32_t num_ports =
         std::min(static_cast<uint32_t>(calendarSwitch->GetNDevices()), kSwitchPortCount);
+    std::vector<std::pair<uint32_t, uint64_t>> active_port_samples;
+    active_port_samples.reserve(16);
     for (uint32_t port_id = 0; port_id < num_ports; ++port_id) {
+      uint64_t egress_bytes = 0;
       for (uint32_t q_idx = 0; q_idx < kSwitchQueueCount; ++q_idx) {
-        const uint64_t egress_bytes = calendarSwitch->m_mmu->egress_bytes[port_id][q_idx];
-        g_switch_metrics_trace << sim_ns << "," << nodeIndex << "," << slot_idx << ","
-                               << port_id << "," << q_idx << "," << egress_bytes << ","
-                               << slot_allowed << "," << slot_blocked << ","
-                               << total_allowed << "," << total_blocked << "\n";
+        egress_bytes += calendarSwitch->m_mmu->egress_bytes[port_id][q_idx];
       }
+      if (egress_bytes > 0) {
+        active_port_samples.push_back(std::make_pair(port_id, egress_bytes));
+      }
+    }
+    if (active_port_samples.empty()) {
+      active_port_samples.push_back(std::make_pair(0u, 0u));
+    }
+    for (const auto& sample : active_port_samples) {
+      g_switch_metrics_trace << sim_ns << "," << nodeIndex << "," << slot_idx << ","
+                             << sample.first << "," << sample.second << ","
+                             << slot_allowed << "," << slot_blocked << ","
+                             << total_allowed << "," << total_blocked << "\n";
     }
   }
   g_switch_metrics_trace.flush();
