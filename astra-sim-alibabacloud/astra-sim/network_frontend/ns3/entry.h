@@ -60,6 +60,12 @@ std::map<std::pair<std::pair<int, int>,int>, AstraSim::ncclFlowTag> receiver_pen
 
 std::map<std::pair<int, std::pair<int, int>>, AstraSim::ncclFlowTag> sender_src_port_map; 
 std::unique_ptr<calendar::GranularityController> g_granularity_controller;
+std::ofstream g_switch_metrics_trace;
+bool g_switch_metrics_header_written = false;
+bool g_switch_metrics_polling_started = false;
+std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> g_last_switch_admission_counters;
+constexpr uint32_t kSwitchPortCount = 1025;
+constexpr uint32_t kSwitchQueueCount = 8;
 
 inline void AppendCalendarTrace(const std::string& event,
                                 int src,
@@ -106,6 +112,73 @@ inline void EnsureGranularityController(uint32_t num_nodes) {
   }
   g_granularity_controller = std::make_unique<calendar::GranularityController>(
       calendar::ParseGranularityMode(calendar_granularity_mode), num_nodes);
+}
+
+inline void PollCalendarSwitchMetrics() {
+  if (calendar_trace_enable == 0 || calendar_trace_file.empty() || !enable_calendar_switch) {
+    return;
+  }
+
+  if (!g_switch_metrics_trace.is_open()) {
+    g_switch_metrics_trace.open(calendar_trace_file + ".switch_metrics.csv",
+                                std::ios::out | std::ios::app);
+    if (!g_switch_metrics_trace.is_open()) {
+      return;
+    }
+    g_switch_metrics_header_written = false;
+  }
+
+  if (!g_switch_metrics_header_written) {
+    g_switch_metrics_trace
+        << "sim_ns,switch_id,slot_idx,port_id,q_idx,egress_bytes,"
+           "slot_allowed,slot_blocked,total_allowed,total_blocked\n";
+    g_switch_metrics_header_written = true;
+  }
+
+  const uint64_t sim_ns = static_cast<uint64_t>(Simulator::Now().GetNanoSeconds());
+  for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
+    Ptr<CalendarSwitchNode> calendarSwitch = DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
+    if (!calendarSwitch || !calendarSwitch->m_mmu) {
+      continue;
+    }
+
+    const uint64_t total_allowed = calendarSwitch->GetAllowedPackets();
+    const uint64_t total_blocked = calendarSwitch->GetBlockedPackets();
+    const auto last = g_last_switch_admission_counters.find(nodeIndex);
+    uint64_t slot_allowed = total_allowed;
+    uint64_t slot_blocked = total_blocked;
+    if (last != g_last_switch_admission_counters.end()) {
+      slot_allowed = total_allowed - last->second.first;
+      slot_blocked = total_blocked - last->second.second;
+    }
+    g_last_switch_admission_counters[nodeIndex] =
+        std::make_pair(total_allowed, total_blocked);
+
+    const uint32_t slot_idx = calendarSwitch->GetCurrentSlotIndex();
+    const uint32_t num_ports =
+        std::min(static_cast<uint32_t>(calendarSwitch->GetNDevices()), kSwitchPortCount);
+    for (uint32_t port_id = 0; port_id < num_ports; ++port_id) {
+      for (uint32_t q_idx = 0; q_idx < kSwitchQueueCount; ++q_idx) {
+        const uint64_t egress_bytes = calendarSwitch->m_mmu->egress_bytes[port_id][q_idx];
+        g_switch_metrics_trace << sim_ns << "," << nodeIndex << "," << slot_idx << ","
+                               << port_id << "," << q_idx << "," << egress_bytes << ","
+                               << slot_allowed << "," << slot_blocked << ","
+                               << total_allowed << "," << total_blocked << "\n";
+      }
+    }
+  }
+  g_switch_metrics_trace.flush();
+
+  const uint64_t interval_ns = std::max<uint64_t>(1, calendar_slot_ns);
+  Simulator::Schedule(NanoSeconds(interval_ns), &PollCalendarSwitchMetrics);
+}
+
+inline void StartCalendarSwitchMetricsPolling() {
+  if (g_switch_metrics_polling_started || calendar_trace_enable == 0 || calendar_trace_file.empty()) {
+    return;
+  }
+  g_switch_metrics_polling_started = true;
+  Simulator::ScheduleNow(&PollCalendarSwitchMetrics);
 }
 struct task1 {
   int src;
@@ -177,6 +250,7 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
   int flow_id = request->flowTag.current_flow_id;
   bool nvls_on = request->flowTag.nvls_on;
   if (enable_calendar_switch) {
+    StartCalendarSwitchMetricsPolling();
     uint32_t observed_nodes = 1;
     if (src >= 0 && dst >= 0) {
       observed_nodes = static_cast<uint32_t>(std::max(src, dst) + 1);
@@ -200,6 +274,9 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
         Ptr<CalendarSwitchNode> calendarSwitch =
             DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
         if (calendarSwitch) {
+          calendarSwitch->ConfigureMetricsTrace(
+              calendar_trace_enable != 0,
+              calendar_trace_file + ".switch_metrics.csv");
           calendarSwitch->LoadSchedule(schedule, calendar_slot_ns,
                                        calendar_frame_slots);
           applied_switches++;

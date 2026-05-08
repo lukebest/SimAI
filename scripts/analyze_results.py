@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,69 @@ def _load_e2e_times(run_dir: Path) -> list[float]:
     if raw_times is None:
         return []
     return [float(value) for value in raw_times]
+
+
+def _load_calendar_non_e2e_metrics(run_dir: Path) -> dict[str, float]:
+    metrics = {
+        "reschedule_events": 0.0,
+        "switch_slots_observed": 0.0,
+        "switch_attempted": 0.0,
+        "switch_allowed": 0.0,
+        "switch_blocked": 0.0,
+        "switch_block_rate": 0.0,
+        "switch_max_q_bytes": 0.0,
+        "switch_avg_q_bytes": 0.0,
+    }
+
+    trace_path = run_dir / "calendar_trace.csv"
+    if trace_path.exists():
+        with trace_path.open(encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            metrics["reschedule_events"] = float(
+                sum(1 for row in reader if row.get("event") == "reschedule")
+            )
+
+    switch_path = run_dir / "calendar_trace.csv.switch_metrics.csv"
+    if switch_path.exists():
+        attempted = 0.0
+        allowed = 0.0
+        blocked = 0.0
+        max_q = 0.0
+        weighted_avg_q = 0.0
+        slots: set[int] = set()
+        with switch_path.open(encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                slot_idx = int(float(row.get("slot_idx", 0)))
+                if "attempted" in row:
+                    att = float(row.get("attempted", 0.0))
+                    alw = float(row.get("allowed", 0.0))
+                    blk = float(row.get("blocked", 0.0))
+                    avg_q = float(row.get("avg_q_bytes", 0.0))
+                    max_q = max(max_q, float(row.get("max_q_bytes", 0.0)))
+                else:
+                    # Polling-based format with per-slot deltas.
+                    alw = float(row.get("slot_allowed", 0.0))
+                    blk = float(row.get("slot_blocked", 0.0))
+                    att = alw + blk
+                    avg_q = float(row.get("egress_bytes", 0.0))
+                    max_q = max(max_q, float(row.get("egress_bytes", 0.0)))
+                slots.add(slot_idx)
+                attempted += att
+                allowed += alw
+                blocked += blk
+                weighted_avg_q += avg_q * att
+        metrics["switch_slots_observed"] = float(len(slots))
+        metrics["switch_attempted"] = attempted
+        metrics["switch_allowed"] = allowed
+        metrics["switch_blocked"] = blocked
+        metrics["switch_block_rate"] = (blocked / attempted) if attempted > 0 else 0.0
+        metrics["switch_max_q_bytes"] = max_q
+        metrics["switch_avg_q_bytes"] = (
+            weighted_avg_q / attempted if attempted > 0 else 0.0
+        )
+
+    return metrics
 
 
 def load_experiment_results(results_dir: Path) -> list[ExperimentResult]:
@@ -125,6 +189,7 @@ def compute_baseline_ratios(results: list[ExperimentResult]) -> list[dict[str, A
                 "ratio": ratio,
                 "baseline_found": baseline is not None,
                 "run_dir": str(result.run_dir),
+                "non_e2e_metrics": _load_calendar_non_e2e_metrics(result.run_dir),
             }
         )
 
@@ -192,6 +257,12 @@ def generate_report_data(results: list[ExperimentResult]) -> dict[str, Any]:
                 "calendar_runs": 0,
                 "runs": [],
                 "baseline_ratios": [],
+                "non_e2e_summary": {
+                    "mean_block_rate": 0.0,
+                    "max_block_rate": 0.0,
+                    "max_queue_bytes": 0.0,
+                    "mean_reschedules": 0.0,
+                },
             },
         )
         stats = compute_e2e_stats(result.e2e_times)
@@ -214,7 +285,7 @@ def generate_report_data(results: list[ExperimentResult]) -> dict[str, Any]:
         )
 
     for ratio in ratios:
-        per_operator.setdefault(
+        operator_bucket = per_operator.setdefault(
             ratio["operator"],
             {
                 "total_runs": 0,
@@ -222,8 +293,33 @@ def generate_report_data(results: list[ExperimentResult]) -> dict[str, Any]:
                 "calendar_runs": 0,
                 "runs": [],
                 "baseline_ratios": [],
+                "non_e2e_summary": {
+                    "mean_block_rate": 0.0,
+                    "max_block_rate": 0.0,
+                    "max_queue_bytes": 0.0,
+                    "mean_reschedules": 0.0,
+                },
             },
-        )["baseline_ratios"].append(ratio)
+        )
+        operator_bucket["baseline_ratios"].append(ratio)
+
+    for operator, summary in per_operator.items():
+        non_e2e = [
+            ratio["non_e2e_metrics"]
+            for ratio in summary["baseline_ratios"]
+            if ratio.get("non_e2e_metrics")
+        ]
+        if not non_e2e:
+            continue
+        block_rates = [item["switch_block_rate"] for item in non_e2e]
+        max_q = [item["switch_max_q_bytes"] for item in non_e2e]
+        reschedules = [item["reschedule_events"] for item in non_e2e]
+        summary["non_e2e_summary"] = {
+            "mean_block_rate": float(np.mean(block_rates)),
+            "max_block_rate": float(np.max(block_rates)),
+            "max_queue_bytes": float(np.max(max_q)),
+            "mean_reschedules": float(np.mean(reschedules)),
+        }
 
     return {
         "executive_summary": {

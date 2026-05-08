@@ -1,67 +1,55 @@
 # GPU=8 Calendar Switch Detailed Report
 
-**Date:** 2026-05-08
-**Source sweep:** `results/calendar_study_full_20260507_timeout`
-**Filter:** `gpus = 8`
+**Date:** 2026-05-08  
+**Primary sweep:** `results/calendar_study_full_20260507_timeout`  
+**Follow-up conflict sweep:** `results/gpu8_conflict_sweep_20260508`  
+**Follow-up summary CSV:** `results/gpu8_conflict_sweep_20260508/summary.csv`  
+**Filter:** `gpus = 8`  
 **Metric:** `p95(calendar) / p95(packet_switch_baseline)`
 
 ## 核心结论（先答问题）
 
-- **各激励下最优调度粒度：无唯一最优。** 在 `GPU=8` 的全部有效样本中，不同粒度/算法得到的 `p95 ratio` 均为 `1.000`，因此是并列最优。
-- **与基线分组交换比对：全部持平。** `450/450` 个有效对比样本均为 `ratio=1.000`，没有出现显著优于或劣于 baseline 的配置。
+- **各激励下最优调度粒度：无唯一最优。** 当前 GPU=8 结果里所有粒度均与 baseline 持平，属于并列最优。
+- **与基线分组交换比对：仍全部持平。** 在补充的“冲突增强 + slot_ns 敏感性”实验中，`48/48` 个 calendar 配置也全部 `ratio=1.000`。
+- **原因定位进展：已确认 schedule 下发链路有效，但尚未形成可见的 e2e 差异。** `calendar_trace.csv` 出现大量 `reschedule` 事件，说明不再是“完全 no-op”。
 
-## 覆盖情况
+## 原始 GPU=8 全量筛选结果（保持不变）
 
-| 指标 | 数值 |
-|---|---:|
-| GPU=8 有效对比样本 | 450 |
-| 优于 baseline (ratio<1) | 0 |
-| 持平 baseline (ratio=1) | 450 |
-| 劣于 baseline (ratio>1) | 0 |
+- 样本：`450`（全部有效）
+- 优于 baseline：`0`
+- 持平 baseline：`450`
+- 劣于 baseline：`0`
 
-## 各激励（operator）结论
+## 补充实验：冲突增强与 slot 灵敏度（GPU=8）
 
-| 激励/Operator | 样本数 | 最优ratio | 最优粒度结论 | 与baseline |
-|---|---:|---:|---|---|
-| `allgather` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `allreduce_ring` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `allreduce_tree` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `alltoall_ep` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `compute_overlap` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `moe_combine` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `moe_dispatch` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `moe_pipeline` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `reduce_scatter` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| `rs_ag_fused` | 45 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
+### 实验设计
 
-## 按消息规模的细分结论
+- 算法固定：`solstice`
+- 激励：`allgather`、`alltoall_ep`、`moe_dispatch`、`moe_combine`
+- 粒度：`operator`、`phase`、`chunk`、`slot`
+- `slot_ns`：`1000`、`5000`、`20000`
+- 共 `48` 个 calendar 点 + `4` 个 baseline 点
 
-| msg_bytes | 样本数 | 最优ratio | 最优粒度结论 | 与baseline |
-|---:|---:|---:|---|---|
-| 1048576 | 150 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| 33554432 | 150 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
-| 268435456 | 150 | 1.000 | 无唯一最优（5种粒度并列） | 持平 |
+### 结果摘要
 
-## 粒度维度汇总
+- `allgather`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
+- `alltoall_ep`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
+- `moe_dispatch`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
+- `moe_combine`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
 
-| 粒度 | 样本数 | 平均ratio | 最优ratio | 优于baseline次数 |
-|---|---:|---:|---:|---:|
-| `operator` | 90 | 1.000 | 1.000 | 0 |
-| `phase` | 90 | 1.000 | 1.000 | 0 |
-| `chunk` | 90 | 1.000 | 1.000 | 0 |
-| `packet` | 90 | 1.000 | 1.000 | 0 |
-| `slot` | 90 | 1.000 | 1.000 | 0 |
+## 代码级验证证据
 
-## 算法维度汇总
+- 已修复首流强制下发表与粒度触发阈值逻辑，避免“从不触发 schedule”。
+- 在 `allgather/phase` 场景中，`calendar_trace.csv` 记录到持续重调度，且 `schedule_entries` 显著大于 1（最高接近 900）。
+- 尽管如此，e2e 仍与 baseline 持平，说明当前 GPU=8 单交换机映射下，calendar gating 对端到端时延尚未形成可观测优势。
 
-| 算法 | 样本数 | 平均ratio | 最优ratio | 优于baseline次数 |
-|---|---:|---:|---:|---:|
-| `solstice` | 150 | 1.000 | 1.000 | 0 |
-| `bvn` | 150 | 1.000 | 1.000 | 0 |
-| `round_robin` | 150 | 1.000 | 1.000 | 0 |
+## 当前结论的边界
 
-## 解释与建议
+- 本结论是 **GPU=8 + 单交换机 + 当前 SimAI workload 映射 + 当前流量形态** 下的结果。
+- 不应直接外推到更大规模、多跳拓扑或更强热点/突发输入。
 
-- 当前 `GPU=8` 数据表明 calendar-switch 在该 workload 映射与实现路径下，与 packet-switch baseline 性能等价。
-- 由于所有配置都持平，不能从本批数据中得出“某个粒度更优”的工程结论。
-- 若要拉开粒度差异，建议补充更强动态性激励（真实 MoE gate trace、多轮随机种子、长时拥塞场景）并引入 slot/queue 级指标解析。
+## 下一步建议
+
+- 引入真实/可控热点 MoE gate trace（非均匀、时变）再做 GPU=8 对比。
+- 增加非 e2e 指标（blocked 次数、每端口队列占用、每 slot admission）来判断 calendar 是否改善瞬时拥塞。
+- 在 16 GPU 和多跳路径上复验粒度收益，再更新“最优粒度”结论。

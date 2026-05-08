@@ -15,6 +15,13 @@ SLOT_NS=1000
 FRAME_SLOTS=1024
 DRY_RUN=false
 SIM_TIMEOUT_SECONDS="${SIM_TIMEOUT_SECONDS:-1200}"
+MOE_PHASES=8
+MOE_GATE_TRACE_MODE="hotspot_burst"
+MOE_GATE_TRACE_FILE=""
+MOE_HOTSPOT_RATIO=4
+MOE_BURST_INTERVAL=4
+MOE_BURST_WIDTH=2
+MOE_GATE_TRACE_OUTPUT=""
 
 usage() {
     cat <<EOF
@@ -29,6 +36,12 @@ Usage: $0 [options]
   --output-dir DIR
   --slot-ns NS
   --frame-slots SLOTS
+  --moe-phases N
+  --moe-gate-trace-mode uniform|hotspot_burst
+  --moe-gate-trace-file PATH
+  --moe-hotspot-ratio R
+  --moe-burst-interval N
+  --moe-burst-width N
 EOF
 }
 
@@ -56,6 +69,12 @@ while [[ $# -gt 0 ]]; do
         --output-dir) require_value "$1" "${2:-}"; OUTPUT_DIR="$2"; shift 2 ;;
         --slot-ns) require_value "$1" "${2:-}"; SLOT_NS="$2"; shift 2 ;;
         --frame-slots) require_value "$1" "${2:-}"; FRAME_SLOTS="$2"; shift 2 ;;
+        --moe-phases) require_value "$1" "${2:-}"; MOE_PHASES="$2"; shift 2 ;;
+        --moe-gate-trace-mode) require_value "$1" "${2:-}"; MOE_GATE_TRACE_MODE="$2"; shift 2 ;;
+        --moe-gate-trace-file) require_value "$1" "${2:-}"; MOE_GATE_TRACE_FILE="$2"; shift 2 ;;
+        --moe-hotspot-ratio) require_value "$1" "${2:-}"; MOE_HOTSPOT_RATIO="$2"; shift 2 ;;
+        --moe-burst-interval) require_value "$1" "${2:-}"; MOE_BURST_INTERVAL="$2"; shift 2 ;;
+        --moe-burst-width) require_value "$1" "${2:-}"; MOE_BURST_WIDTH="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1" ;;
@@ -77,17 +96,26 @@ case "${ALGORITHM}" in
     *) die "--algorithm must be solstice, bvn, or round_robin" ;;
 esac
 
+case "${MOE_GATE_TRACE_MODE}" in
+    uniform|hotspot_burst) ;;
+    *) die "--moe-gate-trace-mode must be uniform or hotspot_burst" ;;
+esac
+
 case "${OPERATOR}" in
     allreduce_ring|allgather|reduce_scatter|allreduce_tree|moe_dispatch|moe_combine|alltoall_ep|rs_ag_fused|compute_overlap|moe_pipeline) ;;
     *) die "Unsupported operator '${OPERATOR}'. Supported operators: allreduce_ring, allgather, reduce_scatter, allreduce_tree, alltoall_ep, moe_dispatch, moe_combine, rs_ag_fused, compute_overlap, moe_pipeline" ;;
 esac
 
-for numeric in GPUS MSG_BYTES SLOT_NS FRAME_SLOTS; do
+for numeric in GPUS MSG_BYTES SLOT_NS FRAME_SLOTS MOE_PHASES MOE_BURST_INTERVAL MOE_BURST_WIDTH; do
     value="${!numeric}"
     if [[ ! "${value}" =~ ^[0-9]+$ || "${value}" == "0" ]]; then
         die "${numeric} must be a positive integer"
     fi
 done
+
+if [[ ! "${MOE_HOTSPOT_RATIO}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    die "MOE_HOTSPOT_RATIO must be a non-negative number"
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
@@ -97,9 +125,70 @@ if [[ ! -x "${PYTHON}" ]]; then
     PYTHON="python3"
 fi
 
+MOE_PHASE_COUNT=1
+MOE_PHASE_BYTES=("${MSG_BYTES}")
+
+prepare_moe_gate_trace() {
+    local output="$1"
+    if [[ -n "${MOE_GATE_TRACE_FILE}" ]]; then
+        [[ -f "${MOE_GATE_TRACE_FILE}" ]] || die "Missing --moe-gate-trace-file: ${MOE_GATE_TRACE_FILE}"
+        cp "${MOE_GATE_TRACE_FILE}" "${output}"
+        return
+    fi
+
+    "${PYTHON}" "${ROOT_DIR}/workloads/calendar_study/moe_gate_trace_generator.py" \
+        --num-gpus "${GPUS}" \
+        --num-phases "${MOE_PHASES}" \
+        --mode "${MOE_GATE_TRACE_MODE}" \
+        --hotspot-ratio "${MOE_HOTSPOT_RATIO}" \
+        --burst-interval "${MOE_BURST_INTERVAL}" \
+        --burst-width "${MOE_BURST_WIDTH}" \
+        --output "${output}"
+}
+
+prepare_moe_phase_bytes() {
+    local trace_json="$1"
+    mapfile -t MOE_PHASE_BYTES < <("${PYTHON}" - "${trace_json}" "${MSG_BYTES}" <<'PY'
+import json
+import math
+import sys
+
+trace_path = sys.argv[1]
+msg_bytes = int(sys.argv[2])
+trace = json.load(open(trace_path, encoding="utf-8"))
+scales = trace.get("phase_scales", [])
+if not scales:
+    scales = [1.0]
+weights = [max(1e-6, float(x)) for x in scales]
+total = sum(weights)
+raw = [msg_bytes * w / total for w in weights]
+phase_bytes = [max(1, int(math.floor(v))) for v in raw]
+delta = msg_bytes - sum(phase_bytes)
+idx = 0
+while delta > 0:
+    phase_bytes[idx % len(phase_bytes)] += 1
+    delta -= 1
+    idx += 1
+while delta < 0 and phase_bytes:
+    i = idx % len(phase_bytes)
+    if phase_bytes[i] > 1:
+        phase_bytes[i] -= 1
+        delta += 1
+    idx += 1
+for value in phase_bytes:
+    print(value)
+PY
+)
+    if [[ ${#MOE_PHASE_BYTES[@]} -eq 0 ]]; then
+        MOE_PHASE_BYTES=("${MSG_BYTES}")
+    fi
+    MOE_PHASE_COUNT="${#MOE_PHASE_BYTES[@]}"
+}
+
 generate_moe_workload() {
     local operator="$1"
     local output="$2"
+    local gate_trace="$3"
     local matrix_output
     matrix_output="$(mktemp)"
     local token_size=$(( MSG_BYTES / (GPUS * 512) ))
@@ -114,7 +203,7 @@ generate_moe_workload() {
         --token-size "${token_size}" \
         --output "${matrix_output}"
 
-    "${PYTHON}" - "${operator}" "${GPUS}" "${MSG_BYTES}" "${matrix_output}" "${output}" <<'PY'
+    "${PYTHON}" - "${operator}" "${GPUS}" "${MSG_BYTES}" "${matrix_output}" "${gate_trace}" "${output}" <<'PY'
 import json
 import sys
 
@@ -122,24 +211,40 @@ operator = sys.argv[1]
 num_gpus = int(sys.argv[2])
 msg_bytes = int(sys.argv[3])
 matrix_path = sys.argv[4]
-output_path = sys.argv[5]
+gate_trace_path = sys.argv[5]
+output_path = sys.argv[6]
 
 matrix = json.load(open(matrix_path, encoding="utf-8"))
-if operator == "moe_combine":
-    matrix = [list(row) for row in zip(*matrix)]
+gate_trace = json.load(open(gate_trace_path, encoding="utf-8"))
+phase_scales = gate_trace.get("phase_scales", [1.0])
+phase_src_load = gate_trace.get("phase_src_load", [[1.0] * num_gpus for _ in phase_scales])
+
+phases = []
+for idx, (scale, src_load) in enumerate(zip(phase_scales, phase_src_load)):
+    src_load = [max(1e-6, float(v)) for v in src_load]
+    phase_matrix = []
+    for src, row in enumerate(matrix):
+        factor = src_load[src] if src < len(src_load) else 1.0
+        phase_matrix.append([float(v) * float(scale) * factor for v in row])
+    if operator == "moe_combine":
+        phase_matrix = [list(row) for row in zip(*phase_matrix)]
+    phases.append(
+        {
+            "index": idx,
+            "name": f"{'dispatch' if operator == 'moe_dispatch' else 'combine'}_phase_{idx}",
+            "demand_matrix": phase_matrix,
+            "phase_scale": float(scale),
+            "src_load_factor": src_load,
+        }
+    )
 
 workload = {
     "operator": operator,
     "num_gpus": num_gpus,
     "msg_bytes": msg_bytes,
-    "num_phases": 1,
-    "phases": [
-        {
-            "index": 0,
-            "name": "dispatch" if operator == "moe_dispatch" else "combine",
-            "demand_matrix": matrix,
-        }
-    ],
+    "num_phases": len(phases),
+    "moe_gate_trace": gate_trace,
+    "phases": phases,
 }
 with open(output_path, "w", encoding="utf-8") as handle:
     json.dump(workload, handle, indent=2)
@@ -149,37 +254,56 @@ PY
 
 generate_alltoall_ep_workload() {
     local output="$1"
-    "${PYTHON}" - "${GPUS}" "${MSG_BYTES}" "${output}" <<'PY'
+    local gate_trace="$2"
+    "${PYTHON}" - "${GPUS}" "${MSG_BYTES}" "${gate_trace}" "${output}" <<'PY'
 import json
 import sys
 
 num_gpus = int(sys.argv[1])
 msg_bytes = int(sys.argv[2])
-output_path = sys.argv[3]
+gate_trace_path = sys.argv[3]
+output_path = sys.argv[4]
+gate_trace = json.load(open(gate_trace_path, encoding="utf-8"))
+phase_scales = gate_trace.get("phase_scales", [1.0])
+phase_src_load = gate_trace.get("phase_src_load", [[1.0] * num_gpus for _ in phase_scales])
 per_peer = float(msg_bytes) / float(max(1, num_gpus - 1))
-matrix = [[0.0 for _ in range(num_gpus)] for _ in range(num_gpus)]
-for src in range(num_gpus):
-    for dst in range(num_gpus):
-        if src != dst:
-            matrix[src][dst] = per_peer
+
+phases = []
+for idx, (scale, src_load) in enumerate(zip(phase_scales, phase_src_load)):
+    src_load = [max(1e-6, float(v)) for v in src_load]
+    matrix = [[0.0 for _ in range(num_gpus)] for _ in range(num_gpus)]
+    for src in range(num_gpus):
+        for dst in range(num_gpus):
+            if src != dst:
+                matrix[src][dst] = per_peer * float(scale) * src_load[src]
+    phases.append(
+        {
+            "index": idx,
+            "name": f"alltoall_ep_phase_{idx}",
+            "demand_matrix": matrix,
+            "phase_scale": float(scale),
+            "src_load_factor": src_load,
+        }
+    )
 
 workload = {
     "operator": "alltoall_ep",
     "num_gpus": num_gpus,
     "msg_bytes": msg_bytes,
-    "num_phases": 1,
-    "phases": [
-        {
-            "index": 0,
-            "name": "alltoall_ep",
-            "demand_matrix": matrix,
-        }
-    ],
+    "num_phases": len(phases),
+    "moe_gate_trace": gate_trace,
+    "phases": phases,
 }
 with open(output_path, "w", encoding="utf-8") as handle:
     json.dump(workload, handle, indent=2)
 PY
 }
+
+if [[ "${OPERATOR}" == "alltoall_ep" || "${OPERATOR}" == "moe_dispatch" || "${OPERATOR}" == "moe_combine" ]]; then
+    MOE_GATE_TRACE_OUTPUT="${OUTPUT_DIR}/moe_gate_trace.json"
+    prepare_moe_gate_trace "${MOE_GATE_TRACE_OUTPUT}"
+    prepare_moe_phase_bytes "${MOE_GATE_TRACE_OUTPUT}"
+fi
 
 case "${OPERATOR}" in
     allreduce_ring|allgather|reduce_scatter|allreduce_tree)
@@ -190,10 +314,10 @@ case "${OPERATOR}" in
             --output "${OUTPUT_DIR}/workload.json"
         ;;
     moe_dispatch|moe_combine)
-        generate_moe_workload "${OPERATOR}" "${OUTPUT_DIR}/workload.json"
+        generate_moe_workload "${OPERATOR}" "${OUTPUT_DIR}/workload.json" "${MOE_GATE_TRACE_OUTPUT}"
         ;;
     alltoall_ep)
-        generate_alltoall_ep_workload "${OUTPUT_DIR}/workload.json"
+        generate_alltoall_ep_workload "${OUTPUT_DIR}/workload.json" "${MOE_GATE_TRACE_OUTPUT}"
         ;;
     rs_ag_fused)
         "${PYTHON}" "${ROOT_DIR}/workloads/calendar_study/fused_op_workloads.py" \
@@ -235,6 +359,7 @@ write_simai_workload() {
     fi
     case "${OPERATOR}" in
         allgather) line_count="${ag_phases}" ;;
+        alltoall_ep|moe_dispatch|moe_combine) line_count="${MOE_PHASE_COUNT}" ;;
         rs_ag_fused|compute_overlap|moe_pipeline) line_count=2 ;;
     esac
     case "${OPERATOR}" in
@@ -262,7 +387,9 @@ write_simai_workload() {
                 printf 'reduce_scatter     -1 1  REDUCESCATTER   %s      1       NONE 0        1      NONE   0      1\n' "${MSG_BYTES}"
                 ;;
             alltoall_ep|moe_dispatch|moe_combine)
-                printf '%s     -1 1  NONE   0      1       NONE 0        1      ALLTOALL_EP   %s      1\n' "${OPERATOR}" "${MSG_BYTES}"
+                for (( phase = 0; phase < MOE_PHASE_COUNT; phase++ )); do
+                    printf '%s_phase_%s     -1 1  NONE   0      1       NONE 0        1      ALLTOALL_EP   %s      1\n' "${OPERATOR}" "${phase}" "${MOE_PHASE_BYTES[phase]}"
+                done
                 ;;
             rs_ag_fused)
                 printf 'rs_ag_reduce_scatter     -1 1  REDUCESCATTER   %s      1       NONE 0        1      NONE   0      1\n' "$(( MSG_BYTES / 2 ))"
@@ -329,6 +456,10 @@ cat > "${OUTPUT_DIR}/metadata.json" <<EOF
   "msg_bytes": ${MSG_BYTES},
   "slot_ns": ${SLOT_NS},
   "frame_slots": ${FRAME_SLOTS},
+  "moe_phases": ${MOE_PHASE_COUNT},
+  "moe_gate_trace_mode": "${MOE_GATE_TRACE_MODE}",
+  "moe_gate_trace_file": "${MOE_GATE_TRACE_OUTPUT}",
+  "switch_metrics_file": "${OUTPUT_DIR}/calendar_trace.csv.switch_metrics.csv",
   "timestamp": "$(date -Iseconds)"
 }
 EOF
