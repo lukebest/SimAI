@@ -1,0 +1,20 @@
+{
+  "mode": "calendar_switch",
+  "granularity": "packet",
+  "algorithm": "solstice",
+  "gpus": 8,
+  "operator": "alltoall_ep",
+  "msg_bytes": 4194304,
+  "slot_ns": 100,
+  "frame_slots": 16,
+  "moe_phases": 8,
+  "moe_gate_trace_mode": "hotspot_burst",
+  "moe_gate_trace_file": "/home/luke/workspace/SimAI/outputs/debug_alltoall_ep_dynamic_packet_100_fix/moe_gate_trace.json",
+  "nvls_enable": 0,
+  "calendar_trace_enable": 1,
+  "calendar_recompute_policy": "dynamic",
+  "calendar_static_pattern": "demand_fallback",
+  "topology_file": "topologies/Spectrum-X_8g_8port_calendar_no_nvswitch",
+  "switch_metrics_file": "/home/luke/workspace/SimAI/outputs/debug_alltoall_ep_dynamic_packet_100_fix/calendar_trace.csv.switch_metrics.csv",
+  "timestamp": "2026-05-08T21:28:12+08:00"
+}

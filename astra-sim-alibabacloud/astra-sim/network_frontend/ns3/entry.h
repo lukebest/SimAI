@@ -67,6 +67,10 @@ bool g_switch_metrics_polling_started = false;
 std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> g_last_switch_admission_counters;
 constexpr uint32_t kSwitchPortCount = 1025;
 constexpr uint32_t kSwitchQueueCount = 8;
+std::map<std::pair<uint32_t, uint32_t>, double> g_calendar_outstanding_demand;
+uint64_t g_watchdog_last_allowed = 0;
+uint64_t g_watchdog_last_blocked = 0;
+bool g_calendar_watchdog_started = false;
 enum class CalendarRecomputePolicy { DYNAMIC, STATIC_OPERATOR, STATIC_PHASE };
 bool g_calendar_policy_initialized = false;
 CalendarRecomputePolicy g_calendar_recompute_policy = CalendarRecomputePolicy::DYNAMIC;
@@ -186,6 +190,7 @@ inline CalendarRecomputePolicy GetCalendarRecomputePolicy() {
 }
 
 inline uint32_t CountTrafficEndpoints();
+inline void StartCalendarStallWatchdog();
 
 inline std::string NormalizeToken(const std::string& value) {
   std::string normalized = value;
@@ -308,6 +313,156 @@ inline uint32_t CountTrafficEndpoints() {
     }
   }
   return std::max(1u, endpoints);
+}
+
+inline double SumOutstandingCalendarDemand() {
+  double total = 0.0;
+  for (const auto& kv : g_calendar_outstanding_demand) {
+    if (kv.second > 0.0) {
+      total += kv.second;
+    }
+  }
+  return total;
+}
+
+inline void AddOutstandingCalendarDemand(int src, int dst, uint64_t bytes) {
+  if (src < 0 || dst < 0 || bytes == 0) {
+    return;
+  }
+  g_calendar_outstanding_demand[std::make_pair(static_cast<uint32_t>(src),
+                                                static_cast<uint32_t>(dst))] +=
+      static_cast<double>(bytes);
+}
+
+inline void ConsumeOutstandingCalendarDemand(uint32_t src, uint32_t dst,
+                                             uint64_t bytes) {
+  if (bytes == 0) {
+    return;
+  }
+  const auto key = std::make_pair(src, dst);
+  const auto it = g_calendar_outstanding_demand.find(key);
+  if (it == g_calendar_outstanding_demand.end()) {
+    return;
+  }
+  const double remain = it->second - static_cast<double>(bytes);
+  if (remain <= 0.0) {
+    g_calendar_outstanding_demand.erase(it);
+  } else {
+    it->second = remain;
+  }
+}
+
+inline calendar::DemandMatrix BuildDemandMatrixWithOutstanding() {
+  auto demand = g_granularity_controller->BuildDemandMatrix();
+  const uint32_t endpoints = CountTrafficEndpoints();
+  if (demand.size() < endpoints) {
+    demand.resize(endpoints, std::vector<double>(endpoints, 0.0));
+  }
+  for (auto& row : demand) {
+    if (row.size() < endpoints) {
+      row.resize(endpoints, 0.0);
+    }
+  }
+  for (const auto& kv : g_calendar_outstanding_demand) {
+    const uint32_t src = kv.first.first;
+    const uint32_t dst = kv.first.second;
+    if (src < demand.size() && dst < demand[src].size() && kv.second > 0.0) {
+      demand[src][dst] += kv.second;
+    }
+  }
+  return demand;
+}
+
+inline void ApplyCalendarScheduleFromDemand(
+    const calendar::DemandMatrix& demand, int src, int dst,
+    const AstraSim::ncclFlowTag& flow_tag, const std::string& event_name) {
+  ns3::CalendarSchedule schedule;
+  if (GetCalendarRecomputePolicy() == CalendarRecomputePolicy::STATIC_OPERATOR &&
+      GetCalendarStaticPattern() == "allgather_ring") {
+    schedule = BuildStaticCalendarSchedule(CountTrafficEndpoints());
+  } else {
+    auto generatedSchedule = calendar::BuildCalendarSchedule(
+        demand, calendar_algorithm, calendar_frame_slots);
+    for (const auto& entry : generatedSchedule.entries) {
+      ns3::CalendarScheduleEntry ns3Entry;
+      ns3Entry.permutation = entry.permutation;
+      ns3Entry.slots = entry.slots;
+      schedule.entries.push_back(ns3Entry);
+    }
+  }
+
+  uint32_t applied_switches = 0;
+  for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
+    Ptr<CalendarSwitchNode> calendarSwitch =
+        DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
+    if (calendarSwitch) {
+      calendarSwitch->LoadSchedule(schedule, calendar_slot_ns, calendar_frame_slots);
+      applied_switches++;
+    }
+  }
+  g_active_calendar_schedule = schedule;
+  g_active_calendar_schedule_valid = !schedule.entries.empty();
+
+  double demand_sum = 0.0;
+  for (const auto& row : demand) {
+    for (double value : row) {
+      if (value > 0.0) {
+        demand_sum += value;
+      }
+    }
+  }
+  AppendCalendarTrace(event_name, src, dst, flow_tag.tag_id, flow_tag.current_flow_id,
+                      flow_tag.chunk_id, demand_sum, schedule.entries.size(),
+                      applied_switches);
+}
+
+inline void PollCalendarStallWatchdog() {
+  if (!enable_calendar_switch ||
+      GetCalendarRecomputePolicy() != CalendarRecomputePolicy::DYNAMIC) {
+    return;
+  }
+
+  uint64_t total_allowed = 0;
+  uint64_t total_blocked = 0;
+  uint32_t switch_count = 0;
+  for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
+    Ptr<CalendarSwitchNode> calendarSwitch = DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
+    if (!calendarSwitch) {
+      continue;
+    }
+    total_allowed += calendarSwitch->GetAllowedPackets();
+    total_blocked += calendarSwitch->GetBlockedPackets();
+    switch_count++;
+  }
+  if (switch_count > 0) {
+    const uint64_t delta_allowed = total_allowed - g_watchdog_last_allowed;
+    const uint64_t delta_blocked = total_blocked - g_watchdog_last_blocked;
+    const double outstanding_sum = SumOutstandingCalendarDemand();
+    if (delta_allowed == 0 && delta_blocked > 0 && outstanding_sum > 0.0 &&
+        g_granularity_controller) {
+      const auto demand = BuildDemandMatrixWithOutstanding();
+      const AstraSim::ncclFlowTag unknown_tag;
+      ApplyCalendarScheduleFromDemand(demand, -1, -1, unknown_tag,
+                                      "reschedule_watchdog");
+    }
+  }
+  g_watchdog_last_allowed = total_allowed;
+  g_watchdog_last_blocked = total_blocked;
+
+  const uint64_t interval_ns = std::max<uint64_t>(
+      static_cast<uint64_t>(calendar_slot_ns), static_cast<uint64_t>(100));
+  Simulator::Schedule(NanoSeconds(interval_ns), &PollCalendarStallWatchdog);
+}
+
+inline void StartCalendarStallWatchdog() {
+  if (g_calendar_watchdog_started || !enable_calendar_switch ||
+      GetCalendarRecomputePolicy() != CalendarRecomputePolicy::DYNAMIC) {
+    return;
+  }
+  g_calendar_watchdog_started = true;
+  g_watchdog_last_allowed = 0;
+  g_watchdog_last_blocked = 0;
+  Simulator::ScheduleNow(&PollCalendarStallWatchdog);
 }
 
 inline void PollCalendarSwitchMetrics() {
@@ -480,6 +635,7 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
   const CalendarRecomputePolicy recompute_policy = GetCalendarRecomputePolicy();
   if (enable_calendar_switch) {
     StartCalendarSwitchMetricsPolling();
+    StartCalendarStallWatchdog();
     uint32_t observed_nodes = CountTrafficEndpoints();
     if (src >= 0 && dst >= 0) {
       observed_nodes = static_cast<uint32_t>(std::max(src, dst) + 1);
@@ -513,56 +669,20 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     }
 
     if (should_reschedule) {
-      auto demand = g_granularity_controller->BuildDemandMatrix();
-      ns3::CalendarSchedule schedule;
-      if (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR &&
-          GetCalendarStaticPattern() == "allgather_ring") {
-        schedule = BuildStaticCalendarSchedule(CountTrafficEndpoints());
-      } else {
-        auto generatedSchedule = calendar::BuildCalendarSchedule(
-            demand, calendar_algorithm, calendar_frame_slots);
-        for (const auto& entry : generatedSchedule.entries) {
-          ns3::CalendarScheduleEntry ns3Entry;
-          ns3Entry.permutation = entry.permutation;
-          ns3Entry.slots = entry.slots;
-          schedule.entries.push_back(ns3Entry);
-        }
-      }
-      uint32_t applied_switches = 0;
-      for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
-        Ptr<CalendarSwitchNode> calendarSwitch =
-            DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
-        if (calendarSwitch) {
-          calendarSwitch->LoadSchedule(schedule, calendar_slot_ns,
-                                       calendar_frame_slots);
-          applied_switches++;
-        }
-      }
-      g_active_calendar_schedule = schedule;
-      g_active_calendar_schedule_valid = !schedule.entries.empty();
+      const auto demand = BuildDemandMatrixWithOutstanding();
+      ApplyCalendarScheduleFromDemand(demand, src, dst, request->flowTag,
+                                      recompute_policy == CalendarRecomputePolicy::DYNAMIC
+                                          ? "reschedule_dynamic"
+                                          : (recompute_policy ==
+                                                     CalendarRecomputePolicy::STATIC_OPERATOR
+                                                 ? "reschedule_static_operator"
+                                                 : "reschedule_static_phase"));
       if (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR) {
         g_static_operator_schedule_loaded = true;
       }
-      double demand_sum = 0.0;
-      for (const auto& row : demand) {
-        for (double value : row) {
-          if (value > 0.0) {
-            demand_sum += value;
-          }
-        }
-      }
-      const std::string event_name =
-          recompute_policy == CalendarRecomputePolicy::DYNAMIC
-              ? "reschedule_dynamic"
-              : (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR
-                     ? "reschedule_static_operator"
-                     : "reschedule_static_phase");
-      AppendCalendarTrace(event_name, src, dst, request->flowTag.tag_id,
-                          request->flowTag.current_flow_id,
-                          request->flowTag.chunk_id, demand_sum,
-                          schedule.entries.size(), applied_switches);
     }
   }
+  AddOutstandingCalendarDemand(src, dst, real_PacketCount);
   int pg = 3, dport = 100;
   int send_lat = 6000;
   const char* send_lat_env = std::getenv("AS_SEND_LAT");
@@ -810,6 +930,7 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
                           flowTag.chunk_id,
                           static_cast<int>(q->sport),
                           q->m_size);
+    ConsumeOutstandingCalendarDemand(sid, did, q->m_size);
     received_chunksize[std::make_pair(flowTag.current_flow_id,std::make_pair(sid,did))]+=q->m_size;
     if(!is_receive_finished(sid,did,flowTag)) {
       #ifdef NS3_MTP
