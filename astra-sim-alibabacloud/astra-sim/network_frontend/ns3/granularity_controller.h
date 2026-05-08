@@ -469,6 +469,7 @@ class GranularityController {
       : m_mode(mode),
         m_numNodes(num_nodes),
         m_hasLast(false),
+        m_hasScheduled(false),
         m_lastTagId(-1),
         m_lastFlowId(-1),
         m_lastChunkId(-1),
@@ -522,6 +523,7 @@ class GranularityController {
   void Reset() {
     m_pendingDemand.clear();
     m_hasLast = false;
+    m_hasScheduled = false;
     m_lastTagId = -1;
     m_lastFlowId = -1;
     m_lastChunkId = -1;
@@ -540,23 +542,27 @@ class GranularityController {
 
     if (m_mode == GranularityMode::PACKET) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
+      m_hasScheduled = true;
       m_pendingFlows = 0;
       return true;
     }
     if (m_mode == GranularityMode::SLOT) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
-      if (thresholdReached) {
+      const bool should = !m_hasScheduled || thresholdReached;
+      if (should) {
+        m_hasScheduled = true;
         m_pendingFlows = 0;
       }
-      return thresholdReached;
+      return should;
     }
     if (AllTagFieldsInvalid(tag_id, flow_id, chunk_id)) {
       // Fallback path for workloads that do not carry boundary tags.
       // In this case, rely on flow-count thresholds to approximate boundaries.
       bool changed = false;
       UpdateLastIds(tag_id, flow_id, chunk_id);
-      const bool should = changed || thresholdReached;
+      const bool should = !m_hasScheduled || changed || thresholdReached;
       if (should) {
+        m_hasScheduled = true;
         m_pendingFlows = 0;
       }
       return should;
@@ -581,8 +587,9 @@ class GranularityController {
     }
 
     UpdateLastIds(tag_id, flow_id, chunk_id);
-    const bool should = changed || thresholdReached;
+    const bool should = !m_hasScheduled || changed || thresholdReached;
     if (should) {
+      m_hasScheduled = true;
       m_pendingFlows = 0;
     }
     return should;
@@ -613,6 +620,7 @@ class GranularityController {
   GranularityMode m_mode;
   uint32_t m_numNodes;
   bool m_hasLast;
+  bool m_hasScheduled;
   int m_lastTagId;
   int m_lastFlowId;
   int m_lastChunkId;
