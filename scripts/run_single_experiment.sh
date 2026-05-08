@@ -25,6 +25,7 @@ MOE_GATE_TRACE_OUTPUT=""
 NVLS_ENABLE=1
 TOPOLOGY_FILE=""
 CALENDAR_TRACE_ENABLE=1
+CALENDAR_RECOMPUTE_POLICY="auto"
 
 usage() {
     cat <<EOF
@@ -48,6 +49,7 @@ Usage: $0 [options]
   --nvls-enable 0|1
   --topology-file PATH
   --calendar-trace-enable 0|1
+  --calendar-recompute-policy auto|dynamic|static_operator|static_phase
 EOF
 }
 
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --nvls-enable) require_value "$1" "${2:-}"; NVLS_ENABLE="$2"; shift 2 ;;
         --topology-file) require_value "$1" "${2:-}"; TOPOLOGY_FILE="$2"; shift 2 ;;
         --calendar-trace-enable) require_value "$1" "${2:-}"; CALENDAR_TRACE_ENABLE="$2"; shift 2 ;;
+        --calendar-recompute-policy) require_value "$1" "${2:-}"; CALENDAR_RECOMPUTE_POLICY="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1" ;;
@@ -127,6 +130,24 @@ if [[ ! "${MOE_HOTSPOT_RATIO}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
 fi
 if [[ "${NVLS_ENABLE}" != "0" && "${NVLS_ENABLE}" != "1" ]]; then
     die "--nvls-enable must be 0 or 1"
+fi
+case "${CALENDAR_RECOMPUTE_POLICY}" in
+    auto|dynamic|static_operator|static_phase) ;;
+    *) die "--calendar-recompute-policy must be auto, dynamic, static_operator, or static_phase" ;;
+esac
+
+if [[ "${CALENDAR_RECOMPUTE_POLICY}" == "auto" ]]; then
+    case "${OPERATOR}" in
+        allreduce_ring|allgather|reduce_scatter|allreduce_tree|rs_ag_fused|compute_overlap)
+            CALENDAR_RECOMPUTE_POLICY="static_operator"
+            ;;
+        moe_dispatch|moe_combine|alltoall_ep|moe_pipeline)
+            CALENDAR_RECOMPUTE_POLICY="dynamic"
+            ;;
+        *)
+            CALENDAR_RECOMPUTE_POLICY="dynamic"
+            ;;
+    esac
 fi
 
 mkdir -p "${OUTPUT_DIR}"
@@ -451,6 +472,7 @@ override_conf_key "CALENDAR_SLOT_NS" "${SLOT_NS}"
 override_conf_key "CALENDAR_FRAME_SLOTS" "${FRAME_SLOTS}"
 override_conf_key "CALENDAR_GRANULARITY_MODE" "${GRANULARITY}"
 override_conf_key "CALENDAR_ALGORITHM" "${ALGORITHM}"
+override_conf_key "CALENDAR_RECOMPUTE_POLICY" "${CALENDAR_RECOMPUTE_POLICY}"
 override_conf_key "CALENDAR_TRACE_ENABLE" "${CALENDAR_TRACE_ENABLE}"
 override_conf_key "CALENDAR_TRACE_FILE" "${OUTPUT_DIR}/calendar_trace.csv"
 override_conf_key "TRACE_OUTPUT_FILE" "${OUTPUT_DIR}/trace.tr"
@@ -473,6 +495,7 @@ cat > "${OUTPUT_DIR}/metadata.json" <<EOF
   "moe_gate_trace_file": "${MOE_GATE_TRACE_OUTPUT}",
   "nvls_enable": ${NVLS_ENABLE},
   "calendar_trace_enable": ${CALENDAR_TRACE_ENABLE},
+  "calendar_recompute_policy": "${CALENDAR_RECOMPUTE_POLICY}",
   "topology_file": "${TOPOLOGY_FILE:-Spectrum-X_${GPUS}g_8gps_100Gbps_A100}",
   "switch_metrics_file": "${OUTPUT_DIR}/calendar_trace.csv.switch_metrics.csv",
   "timestamp": "$(date -Iseconds)"

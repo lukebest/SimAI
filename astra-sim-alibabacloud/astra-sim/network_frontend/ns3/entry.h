@@ -31,6 +31,7 @@
 #include "ns3/point-to-point-helper.h"
 #include "ns3/qbb-helper.h"
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -66,6 +67,11 @@ bool g_switch_metrics_polling_started = false;
 std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> g_last_switch_admission_counters;
 constexpr uint32_t kSwitchPortCount = 1025;
 constexpr uint32_t kSwitchQueueCount = 8;
+enum class CalendarRecomputePolicy { DYNAMIC, STATIC_OPERATOR, STATIC_PHASE };
+bool g_calendar_policy_initialized = false;
+CalendarRecomputePolicy g_calendar_recompute_policy = CalendarRecomputePolicy::DYNAMIC;
+bool g_static_operator_schedule_loaded = false;
+int g_static_phase_last_chunk = -1;
 
 inline void AppendCalendarTrace(const std::string& event,
                                 int src,
@@ -113,6 +119,30 @@ inline void EnsureGranularityController(uint32_t num_nodes) {
   }
   g_granularity_controller = std::make_unique<calendar::GranularityController>(
       calendar::ParseGranularityMode(calendar_granularity_mode), num_nodes);
+}
+
+inline CalendarRecomputePolicy ParseCalendarRecomputePolicy(const std::string& policy) {
+  std::string normalized = policy;
+  std::transform(
+      normalized.begin(), normalized.end(), normalized.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  if (normalized == "static_operator" || normalized == "operator_static" ||
+      normalized == "static") {
+    return CalendarRecomputePolicy::STATIC_OPERATOR;
+  }
+  if (normalized == "static_phase" || normalized == "phase_static") {
+    return CalendarRecomputePolicy::STATIC_PHASE;
+  }
+  return CalendarRecomputePolicy::DYNAMIC;
+}
+
+inline CalendarRecomputePolicy GetCalendarRecomputePolicy() {
+  if (!g_calendar_policy_initialized) {
+    g_calendar_recompute_policy =
+        ParseCalendarRecomputePolicy(calendar_recompute_policy);
+    g_calendar_policy_initialized = true;
+  }
+  return g_calendar_recompute_policy;
 }
 
 inline uint32_t CountTrafficEndpoints() {
@@ -293,15 +323,41 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
   int flow_id = request->flowTag.current_flow_id;
   bool nvls_on = request->flowTag.nvls_on;
   if (enable_calendar_switch) {
+    const CalendarRecomputePolicy recompute_policy = GetCalendarRecomputePolicy();
     StartCalendarSwitchMetricsPolling();
     uint32_t observed_nodes = CountTrafficEndpoints();
     if (src >= 0 && dst >= 0) {
       observed_nodes = static_cast<uint32_t>(std::max(src, dst) + 1);
     }
     EnsureGranularityController(std::max(CountTrafficEndpoints(), observed_nodes));
-    g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
-                                          request->flowTag);
-    if (g_granularity_controller->ShouldReschedule(request->flowTag)) {
+    bool should_reschedule = false;
+
+    if (recompute_policy == CalendarRecomputePolicy::DYNAMIC) {
+      g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
+                                            request->flowTag);
+      should_reschedule = g_granularity_controller->ShouldReschedule(request->flowTag);
+    } else if (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR) {
+      if (!g_static_operator_schedule_loaded) {
+        g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
+                                              request->flowTag);
+        should_reschedule = g_granularity_controller->ShouldReschedule(request->flowTag);
+      }
+    } else {  // STATIC_PHASE
+      g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
+                                            request->flowTag);
+      if (g_static_phase_last_chunk < 0) {
+        should_reschedule = g_granularity_controller->ShouldReschedule(request->flowTag);
+        if (should_reschedule) {
+          g_static_phase_last_chunk = request->flowTag.chunk_id;
+        }
+      } else if (request->flowTag.chunk_id >= 0 &&
+                 request->flowTag.chunk_id != g_static_phase_last_chunk) {
+        should_reschedule = true;
+        g_static_phase_last_chunk = request->flowTag.chunk_id;
+      }
+    }
+
+    if (should_reschedule) {
       auto demand = g_granularity_controller->BuildDemandMatrix();
       auto generatedSchedule = calendar::BuildCalendarSchedule(
           demand, calendar_algorithm, calendar_frame_slots);
@@ -322,6 +378,9 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
           applied_switches++;
         }
       }
+      if (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR) {
+        g_static_operator_schedule_loaded = true;
+      }
       double demand_sum = 0.0;
       for (const auto& row : demand) {
         for (double value : row) {
@@ -330,7 +389,13 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
           }
         }
       }
-      AppendCalendarTrace("reschedule", src, dst, request->flowTag.tag_id,
+      const std::string event_name =
+          recompute_policy == CalendarRecomputePolicy::DYNAMIC
+              ? "reschedule_dynamic"
+              : (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR
+                     ? "reschedule_static_operator"
+                     : "reschedule_static_phase");
+      AppendCalendarTrace(event_name, src, dst, request->flowTag.tag_id,
                           request->flowTag.current_flow_id,
                           request->flowTag.chunk_id, demand_sum,
                           schedule.entries.size(), applied_switches);
