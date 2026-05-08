@@ -92,6 +92,7 @@ uint32_t calendar_frame_slots = 1024;
 std::string calendar_granularity_mode = "operator";
 std::string calendar_algorithm = "solstice";
 std::string calendar_recompute_policy = "dynamic";
+std::string calendar_static_pattern = "auto";
 uint32_t calendar_trace_enable = 0;
 std::string calendar_trace_file = "";
 
@@ -616,6 +617,8 @@ bool ReadConf(string network_topo,string network_conf) {
         conf >> calendar_algorithm;
       } else if (key.compare("CALENDAR_RECOMPUTE_POLICY") == 0) {
         conf >> calendar_recompute_policy;
+      } else if (key.compare("CALENDAR_STATIC_PATTERN") == 0) {
+        conf >> calendar_static_pattern;
       } else if (key.compare("CALENDAR_TRACE_ENABLE") == 0) {
         conf >> calendar_trace_enable;
       } else if (key.compare("CALENDAR_TRACE_FILE") == 0) {

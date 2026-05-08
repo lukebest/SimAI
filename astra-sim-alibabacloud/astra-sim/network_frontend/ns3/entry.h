@@ -72,6 +72,46 @@ bool g_calendar_policy_initialized = false;
 CalendarRecomputePolicy g_calendar_recompute_policy = CalendarRecomputePolicy::DYNAMIC;
 bool g_static_operator_schedule_loaded = false;
 int g_static_phase_last_chunk = -1;
+bool g_calendar_static_pattern_initialized = false;
+std::string g_calendar_static_pattern = "demand_fallback";
+ns3::CalendarSchedule g_active_calendar_schedule;
+bool g_active_calendar_schedule_valid = false;
+
+inline void AppendFlowTimingTrace(const std::string& event,
+                                  int src,
+                                  int dst,
+                                  int tag_id,
+                                  int flow_id,
+                                  int chunk_id,
+                                  int sport,
+                                  uint64_t aux_ns) {
+  if (calendar_trace_enable == 0 || calendar_trace_file.empty()) {
+    return;
+  }
+  static std::ofstream trace;
+  static bool header_written = false;
+  if (!trace.is_open()) {
+    trace.open(calendar_trace_file + ".flow_timing.csv",
+               std::ios::out | std::ios::app);
+    if (!trace.is_open()) {
+      return;
+    }
+  }
+  if (!header_written) {
+    trace << "sim_ns,event,src,dst,tag_id,flow_id,chunk_id,sport,aux_ns\n";
+    header_written = true;
+  }
+  trace << Simulator::Now().GetNanoSeconds() << ","
+        << event << ","
+        << src << ","
+        << dst << ","
+        << tag_id << ","
+        << flow_id << ","
+        << chunk_id << ","
+        << sport << ","
+        << aux_ns << "\n";
+  trace.flush();
+}
 
 inline void AppendCalendarTrace(const std::string& event,
                                 int src,
@@ -143,6 +183,121 @@ inline CalendarRecomputePolicy GetCalendarRecomputePolicy() {
     g_calendar_policy_initialized = true;
   }
   return g_calendar_recompute_policy;
+}
+
+inline uint32_t CountTrafficEndpoints();
+
+inline std::string NormalizeToken(const std::string& value) {
+  std::string normalized = value;
+  std::transform(
+      normalized.begin(), normalized.end(), normalized.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return normalized;
+}
+
+inline const std::string& GetCalendarStaticPattern() {
+  if (!g_calendar_static_pattern_initialized) {
+    g_calendar_static_pattern = NormalizeToken(calendar_static_pattern);
+    if (g_calendar_static_pattern.empty()) {
+      g_calendar_static_pattern = "demand_fallback";
+    }
+    g_calendar_static_pattern_initialized = true;
+  }
+  return g_calendar_static_pattern;
+}
+
+inline ns3::CalendarSchedule BuildStaticCalendarSchedule(uint32_t radix) {
+  ns3::CalendarSchedule schedule;
+  if (radix == 0 || calendar_frame_slots == 0) {
+    return schedule;
+  }
+  ns3::CalendarScheduleEntry entry;
+  entry.permutation.resize(radix);
+  for (uint32_t in = 0; in < radix; ++in) {
+    entry.permutation[in] = (in + 1) % radix;
+  }
+  entry.slots = calendar_frame_slots;
+  schedule.entries.push_back(entry);
+  return schedule;
+}
+
+inline uint64_t EstimateIngressArrivalNs(uint32_t src, uint32_t dst, uint64_t base_send_ns) {
+  if (src >= n.GetN() || dst >= n.GetN()) {
+    return base_send_ns;
+  }
+  Ptr<Node> src_node = n.Get(src);
+  Ptr<Node> dst_node = n.Get(dst);
+  uint64_t total_delay = 0;
+  uint64_t total_tx_delay = 0;
+  if (pairDelay[src_node].count(dst_node) > 0) {
+    total_delay = pairDelay[src_node][dst_node];
+  }
+  if (pairTxDelay[src_node].count(dst_node) > 0) {
+    total_tx_delay = pairTxDelay[src_node][dst_node];
+  }
+  const uint64_t one_hop_budget = std::max<uint64_t>(1, (total_delay + total_tx_delay) / 2);
+  return base_send_ns + one_hop_budget;
+}
+
+inline uint64_t ComputeScheduleAwareSendTimeNs(uint32_t src, uint32_t dst, uint64_t base_send_ns) {
+  if (!g_active_calendar_schedule_valid || g_active_calendar_schedule.entries.empty() ||
+      calendar_slot_ns == 0 || calendar_frame_slots == 0) {
+    return base_send_ns;
+  }
+  uint32_t host_radix = CountTrafficEndpoints();
+  if (src >= host_radix || dst >= host_radix) {
+    return base_send_ns;
+  }
+  std::vector<uint32_t> allowed_slots;
+  allowed_slots.reserve(calendar_frame_slots);
+  uint32_t slot_cursor = 0;
+  for (const auto& entry : g_active_calendar_schedule.entries) {
+    bool match = false;
+    if (src < entry.permutation.size() && dst < entry.permutation.size()) {
+      match = entry.permutation[src] == dst;
+    }
+    for (uint32_t i = 0; i < entry.slots && slot_cursor < calendar_frame_slots; ++i) {
+      if (match) {
+        allowed_slots.push_back(slot_cursor);
+      }
+      slot_cursor++;
+    }
+    if (slot_cursor >= calendar_frame_slots) {
+      break;
+    }
+  }
+  if (allowed_slots.empty()) {
+    return base_send_ns;
+  }
+
+  const uint64_t frame_ns =
+      static_cast<uint64_t>(calendar_slot_ns) * static_cast<uint64_t>(calendar_frame_slots);
+  if (frame_ns == 0) {
+    return base_send_ns;
+  }
+  const uint64_t now_ns = static_cast<uint64_t>(Simulator::Now().GetNanoSeconds());
+  const uint64_t ingress_arrival_ns = EstimateIngressArrivalNs(src, dst, base_send_ns);
+  const uint64_t earliest_arrival_ns = std::max(now_ns + 1, ingress_arrival_ns);
+
+  uint64_t frame_base = (earliest_arrival_ns / frame_ns) * frame_ns;
+  while (true) {
+    const uint64_t offset_ns = earliest_arrival_ns - frame_base;
+    const uint32_t current_slot = static_cast<uint32_t>(offset_ns / calendar_slot_ns);
+    for (uint32_t slot : allowed_slots) {
+      if (slot >= current_slot) {
+        const uint64_t target_arrival_ns =
+            frame_base + static_cast<uint64_t>(slot) * static_cast<uint64_t>(calendar_slot_ns) +
+            static_cast<uint64_t>(calendar_slot_ns / 4);
+        if (target_arrival_ns > ingress_arrival_ns) {
+          const uint64_t ingress_budget = ingress_arrival_ns - base_send_ns;
+          return target_arrival_ns > ingress_budget
+                     ? (target_arrival_ns - ingress_budget)
+                     : base_send_ns;
+        }
+      }
+    }
+    frame_base += frame_ns;
+  }
 }
 
 inline uint32_t CountTrafficEndpoints() {
@@ -322,8 +477,8 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     }
   int flow_id = request->flowTag.current_flow_id;
   bool nvls_on = request->flowTag.nvls_on;
+  const CalendarRecomputePolicy recompute_policy = GetCalendarRecomputePolicy();
   if (enable_calendar_switch) {
-    const CalendarRecomputePolicy recompute_policy = GetCalendarRecomputePolicy();
     StartCalendarSwitchMetricsPolling();
     uint32_t observed_nodes = CountTrafficEndpoints();
     if (src >= 0 && dst >= 0) {
@@ -359,14 +514,19 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
 
     if (should_reschedule) {
       auto demand = g_granularity_controller->BuildDemandMatrix();
-      auto generatedSchedule = calendar::BuildCalendarSchedule(
-          demand, calendar_algorithm, calendar_frame_slots);
       ns3::CalendarSchedule schedule;
-      for (const auto& entry : generatedSchedule.entries) {
-        ns3::CalendarScheduleEntry ns3Entry;
-        ns3Entry.permutation = entry.permutation;
-        ns3Entry.slots = entry.slots;
-        schedule.entries.push_back(ns3Entry);
+      if (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR &&
+          GetCalendarStaticPattern() == "allgather_ring") {
+        schedule = BuildStaticCalendarSchedule(CountTrafficEndpoints());
+      } else {
+        auto generatedSchedule = calendar::BuildCalendarSchedule(
+            demand, calendar_algorithm, calendar_frame_slots);
+        for (const auto& entry : generatedSchedule.entries) {
+          ns3::CalendarScheduleEntry ns3Entry;
+          ns3Entry.permutation = entry.permutation;
+          ns3Entry.slots = entry.slots;
+          schedule.entries.push_back(ns3Entry);
+        }
       }
       uint32_t applied_switches = 0;
       for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
@@ -378,6 +538,8 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
           applied_switches++;
         }
       }
+      g_active_calendar_schedule = schedule;
+      g_active_calendar_schedule_valid = !schedule.entries.empty();
       if (recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR) {
         g_static_operator_schedule_loaded = true;
       }
@@ -413,11 +575,29 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     }
   }
   send_lat *= 1000;
+  uint64_t send_time_ns = static_cast<uint64_t>(send_lat);
+  if (enable_calendar_switch &&
+      recompute_policy == CalendarRecomputePolicy::STATIC_OPERATOR &&
+      g_active_calendar_schedule_valid) {
+    send_time_ns = ComputeScheduleAwareSendTimeNs(
+        static_cast<uint32_t>(src), static_cast<uint32_t>(dst),
+        static_cast<uint64_t>(send_lat));
+  }
   flow_input.idx++;
   if(real_PacketCount == 0) real_PacketCount = 1;
     MockNcclLog* NcclLog = MockNcclLog::getInstance();
     NcclLog->writeLog(NcclLogLevel::DEBUG," [Packet sending event]  %dSendFlow to  %d channelid:  %d flow_id  %d srcip  %d dstip  %d size:  %llu at the tick:  %d",src,dst,tag,flow_id,serverAddress[src],serverAddress[dst],maxPacketCount,AstraSim::Sys::boostedTick());
     NcclLog->writeLog(NcclLogLevel::DEBUG," request->flowTag [Packet sending event]  %dSendFlow to  %d tag_id:  %d flow_id  %d srcip  %d dstip  %d size:  %llu at the tick:  %d",request->flowTag.sender_node,request->flowTag.receiver_node,request->flowTag.tag_id,request->flowTag.current_flow_id,serverAddress[src],serverAddress[dst],maxPacketCount,AstraSim::Sys::boostedTick());
+  const uint64_t now_ns = static_cast<uint64_t>(Simulator::Now().GetNanoSeconds());
+  const uint64_t pacing_defer_ns = send_time_ns > now_ns ? (send_time_ns - now_ns) : 0;
+  AppendFlowTimingTrace("sendflow_schedule",
+                        src,
+                        dst,
+                        request->flowTag.tag_id,
+                        request->flowTag.current_flow_id,
+                        request->flowTag.chunk_id,
+                        static_cast<int>(port),
+                        pacing_defer_ns);
   RdmaClientHelper clientHelper(
       pg, serverAddress[src], serverAddress[dst], port, dport, real_PacketCount,
       has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
@@ -429,7 +609,8 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     MtpInterface::explicitCriticalSection cs;
     #endif
     ApplicationContainer appCon = clientHelper.Install(n.Get(src));
-    appCon.Start(Time(send_lat));
+    const uint64_t start_delay_ns = send_time_ns > now_ns ? (send_time_ns - now_ns) : 0;
+    appCon.Start(NanoSeconds(start_delay_ns));
     waiting_to_sent_callback[std::make_pair(request->flowTag.current_flow_id,std::make_pair(src,dst))]++;
     waiting_to_notify_receiver[std::make_pair(request->flowTag.current_flow_id,std::make_pair(src,dst))]++;
     #ifdef NS3_MTP
@@ -459,6 +640,14 @@ void notify_receiver_receive_data(int sender_node, int receiver_node,
       if (message_size == t2.count) {
         NcclLog->writeLog(NcclLogLevel::DEBUG," message_size = t2.count expeRecvHash.erase  %d notify recevier:  %d message size:  %llu channel_id  %d",sender_node,receiver_node,message_size,tag);
         expeRecvHash.erase(make_pair(tag, make_pair(sender_node, receiver_node)));
+        AppendFlowTimingTrace("receiver_done",
+                              sender_node,
+                              receiver_node,
+                              flowTag.tag_id,
+                              flowTag.current_flow_id,
+                              flowTag.chunk_id,
+                              -1,
+                              message_size);
         #ifdef NS3_MTP
         cs.ExitSection();
         #endif
@@ -533,6 +722,14 @@ void notify_sender_sending_finished(int sender_node, int receiver_node,
         } else {
           nodeHash[make_pair(sender_node, 0)] += message_size;
         }
+        AppendFlowTimingTrace("sender_done",
+                              sender_node,
+                              receiver_node,
+                              flowTag.tag_id,
+                              flowTag.current_flow_id,
+                              flowTag.chunk_id,
+                              -1,
+                              message_size);
         #ifdef NS3_MTP
         cs.ExitSection();
         #endif
@@ -605,6 +802,14 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     }
     flowTag = sender_src_port_map[make_pair(q->sport, make_pair(sid, did))];
     sender_src_port_map.erase(make_pair(q->sport, make_pair(sid, did)));
+    AppendFlowTimingTrace("qp_finish",
+                          static_cast<int>(sid),
+                          static_cast<int>(did),
+                          flowTag.tag_id,
+                          flowTag.current_flow_id,
+                          flowTag.chunk_id,
+                          static_cast<int>(q->sport),
+                          q->m_size);
     received_chunksize[std::make_pair(flowTag.current_flow_id,std::make_pair(sid,did))]+=q->m_size;
     if(!is_receive_finished(sid,did,flowTag)) {
       #ifdef NS3_MTP
@@ -645,6 +850,14 @@ void send_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     cs.ExitSection();
     #endif
   }
+  AppendFlowTimingTrace("send_finish_agg",
+                        static_cast<int>(sid),
+                        static_cast<int>(did),
+                        flowTag.tag_id,
+                        flowTag.current_flow_id,
+                        flowTag.chunk_id,
+                        static_cast<int>(q->sport),
+                        all_sent_chunksize);
   notify_sender_sending_finished(sid, did, all_sent_chunksize, flowTag);
 }
 

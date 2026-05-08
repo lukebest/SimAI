@@ -11,7 +11,7 @@ GPUS=8
 OPERATOR="allreduce_ring"
 MSG_BYTES=33554432
 OUTPUT_DIR="${ROOT_DIR}/results/calendar/default"
-SLOT_NS=1000
+SLOT_NS=800
 FRAME_SLOTS=1024
 DRY_RUN=false
 SIM_TIMEOUT_SECONDS="${SIM_TIMEOUT_SECONDS:-1200}"
@@ -26,6 +26,7 @@ NVLS_ENABLE=1
 TOPOLOGY_FILE=""
 CALENDAR_TRACE_ENABLE=1
 CALENDAR_RECOMPUTE_POLICY="auto"
+CALENDAR_STATIC_PATTERN="auto"
 
 usage() {
     cat <<EOF
@@ -50,6 +51,7 @@ Usage: $0 [options]
   --topology-file PATH
   --calendar-trace-enable 0|1
   --calendar-recompute-policy auto|dynamic|static_operator|static_phase
+  --calendar-static-pattern auto|allgather_ring|demand_fallback
 EOF
 }
 
@@ -87,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --topology-file) require_value "$1" "${2:-}"; TOPOLOGY_FILE="$2"; shift 2 ;;
         --calendar-trace-enable) require_value "$1" "${2:-}"; CALENDAR_TRACE_ENABLE="$2"; shift 2 ;;
         --calendar-recompute-policy) require_value "$1" "${2:-}"; CALENDAR_RECOMPUTE_POLICY="$2"; shift 2 ;;
+        --calendar-static-pattern) require_value "$1" "${2:-}"; CALENDAR_STATIC_PATTERN="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1" ;;
@@ -135,6 +138,10 @@ case "${CALENDAR_RECOMPUTE_POLICY}" in
     auto|dynamic|static_operator|static_phase) ;;
     *) die "--calendar-recompute-policy must be auto, dynamic, static_operator, or static_phase" ;;
 esac
+case "${CALENDAR_STATIC_PATTERN}" in
+    auto|allgather_ring|demand_fallback) ;;
+    *) die "--calendar-static-pattern must be auto, allgather_ring, or demand_fallback" ;;
+esac
 
 if [[ "${CALENDAR_RECOMPUTE_POLICY}" == "auto" ]]; then
     case "${OPERATOR}" in
@@ -146,6 +153,17 @@ if [[ "${CALENDAR_RECOMPUTE_POLICY}" == "auto" ]]; then
             ;;
         *)
             CALENDAR_RECOMPUTE_POLICY="dynamic"
+            ;;
+    esac
+fi
+
+if [[ "${CALENDAR_STATIC_PATTERN}" == "auto" ]]; then
+    case "${OPERATOR}" in
+        allgather)
+            CALENDAR_STATIC_PATTERN="allgather_ring"
+            ;;
+        *)
+            CALENDAR_STATIC_PATTERN="demand_fallback"
             ;;
     esac
 fi
@@ -473,6 +491,7 @@ override_conf_key "CALENDAR_FRAME_SLOTS" "${FRAME_SLOTS}"
 override_conf_key "CALENDAR_GRANULARITY_MODE" "${GRANULARITY}"
 override_conf_key "CALENDAR_ALGORITHM" "${ALGORITHM}"
 override_conf_key "CALENDAR_RECOMPUTE_POLICY" "${CALENDAR_RECOMPUTE_POLICY}"
+override_conf_key "CALENDAR_STATIC_PATTERN" "${CALENDAR_STATIC_PATTERN}"
 override_conf_key "CALENDAR_TRACE_ENABLE" "${CALENDAR_TRACE_ENABLE}"
 override_conf_key "CALENDAR_TRACE_FILE" "${OUTPUT_DIR}/calendar_trace.csv"
 override_conf_key "TRACE_OUTPUT_FILE" "${OUTPUT_DIR}/trace.tr"
@@ -496,6 +515,7 @@ cat > "${OUTPUT_DIR}/metadata.json" <<EOF
   "nvls_enable": ${NVLS_ENABLE},
   "calendar_trace_enable": ${CALENDAR_TRACE_ENABLE},
   "calendar_recompute_policy": "${CALENDAR_RECOMPUTE_POLICY}",
+  "calendar_static_pattern": "${CALENDAR_STATIC_PATTERN}",
   "topology_file": "${TOPOLOGY_FILE:-Spectrum-X_${GPUS}g_8gps_100Gbps_A100}",
   "switch_metrics_file": "${OUTPUT_DIR}/calendar_trace.csv.switch_metrics.csv",
   "timestamp": "$(date -Iseconds)"
