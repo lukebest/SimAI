@@ -14,6 +14,7 @@ OUTPUT_DIR="${ROOT_DIR}/results/calendar/default"
 SLOT_NS=1000
 FRAME_SLOTS=1024
 DRY_RUN=false
+SIM_TIMEOUT_SECONDS="${SIM_TIMEOUT_SECONDS:-1200}"
 
 usage() {
     cat <<EOF
@@ -77,8 +78,8 @@ case "${ALGORITHM}" in
 esac
 
 case "${OPERATOR}" in
-    allreduce_ring|allgather|reduce_scatter|allreduce_tree|moe_dispatch|moe_combine|alltoall_ep|rs_ag_fused|moe_pipeline) ;;
-    *) die "Unsupported operator '${OPERATOR}'. Supported operators: allreduce_ring, allgather, reduce_scatter, allreduce_tree, moe_dispatch, moe_combine, alltoall_ep, rs_ag_fused, moe_pipeline" ;;
+    allreduce_ring|allgather|reduce_scatter|allreduce_tree|moe_dispatch|moe_combine|alltoall_ep|rs_ag_fused|compute_overlap|moe_pipeline) ;;
+    *) die "Unsupported operator '${OPERATOR}'. Supported operators: allreduce_ring, allgather, reduce_scatter, allreduce_tree, alltoall_ep, moe_dispatch, moe_combine, rs_ag_fused, compute_overlap, moe_pipeline" ;;
 esac
 
 for numeric in GPUS MSG_BYTES SLOT_NS FRAME_SLOTS; do
@@ -89,6 +90,7 @@ for numeric in GPUS MSG_BYTES SLOT_NS FRAME_SLOTS; do
 done
 
 mkdir -p "${OUTPUT_DIR}"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
 
 PYTHON="${ROOT_DIR}/venv/bin/python"
 if [[ ! -x "${PYTHON}" ]]; then
@@ -200,6 +202,13 @@ case "${OPERATOR}" in
             --msg-bytes "${MSG_BYTES}" \
             --output "${OUTPUT_DIR}/workload.json"
         ;;
+    compute_overlap)
+        "${PYTHON}" "${ROOT_DIR}/workloads/calendar_study/generate_workloads.py" \
+            --operator allreduce_ring \
+            --num-gpus "${GPUS}" \
+            --msg-bytes "${MSG_BYTES}" \
+            --output "${OUTPUT_DIR}/workload.json"
+        ;;
     moe_pipeline)
         "${PYTHON}" "${ROOT_DIR}/workloads/calendar_study/fused_op_workloads.py" \
             --type moe_pipeline \
@@ -211,12 +220,64 @@ case "${OPERATOR}" in
         ;;
 esac
 
+write_simai_workload() {
+    local output="$1"
+    local line_count=1
+    local tp_size="${GPUS}"
+    local ep_size=1
+    case "${OPERATOR}" in
+        rs_ag_fused|compute_overlap|moe_pipeline) line_count=2 ;;
+    esac
+    case "${OPERATOR}" in
+        alltoall_ep|moe_dispatch|moe_combine|moe_pipeline)
+            tp_size=1
+            ep_size="${GPUS}"
+            ;;
+    esac
+
+    {
+        printf 'HYBRID_TRANSFORMER_FWD_IN_BCKWD model_parallel_NPU_group: %s ep: %s pp: 1 vpp: 1 ga: 1 all_gpus: %s checkpoints: 0 checkpoint_initiates: 0\n' \
+            "${tp_size}" "${ep_size}" "${GPUS}"
+        printf '%s\n' "${line_count}"
+
+        case "${OPERATOR}" in
+            allreduce_ring|allreduce_tree)
+                printf 'allreduce_%s     -1 1  ALLREDUCE   %s      1       NONE 0        1      NONE   0      1\n' "${ALGORITHM}" "${MSG_BYTES}"
+                ;;
+            allgather)
+                printf 'allgather     -1 1  ALLGATHER   %s      1       NONE 0        1      NONE   0      1\n' "${MSG_BYTES}"
+                ;;
+            reduce_scatter)
+                printf 'reduce_scatter     -1 1  REDUCESCATTER   %s      1       NONE 0        1      NONE   0      1\n' "${MSG_BYTES}"
+                ;;
+            alltoall_ep|moe_dispatch|moe_combine)
+                printf '%s     -1 1  NONE   0      1       NONE 0        1      ALLTOALL_EP   %s      1\n' "${OPERATOR}" "${MSG_BYTES}"
+                ;;
+            rs_ag_fused)
+                printf 'rs_ag_reduce_scatter     -1 1  REDUCESCATTER   %s      1       NONE 0        1      NONE   0      1\n' "$(( MSG_BYTES / 2 ))"
+                printf 'rs_ag_allgather     -1 1  ALLGATHER   %s      1       NONE 0        1      NONE   0      1\n' "$(( MSG_BYTES / 2 ))"
+                ;;
+            compute_overlap)
+                printf 'compute_overlap_comm0     -1 1000  ALLREDUCE   %s      1       NONE 0        1      NONE   0      1\n' "$(( MSG_BYTES / 2 ))"
+                printf 'compute_overlap_comm1     -1 1000  ALLREDUCE   %s      1       NONE 0        1      NONE   0      1\n' "$(( MSG_BYTES / 2 ))"
+                ;;
+            moe_pipeline)
+                printf 'moe_pipeline_dispatch     -1 1000  NONE   0      1       NONE 0        1      ALLTOALL_EP   %s      1\n' "$(( MSG_BYTES / 2 ))"
+                printf 'moe_pipeline_combine     -1 1000  NONE   0      1       NONE 0        1      ALLTOALL_EP   %s      1\n' "$(( MSG_BYTES / 2 ))"
+                ;;
+        esac
+    } > "${output}"
+}
+
+WORKLOAD_TXT="${OUTPUT_DIR}/workload.txt"
+write_simai_workload "${WORKLOAD_TXT}"
+
 ENABLE_CALENDAR=0
 if [[ "${MODE}" == "calendar_switch" ]]; then
     ENABLE_CALENDAR=1
 fi
 
-TEMPLATE_CONF="${ROOT_DIR}/astra-sim-alibabacloud/inputs/config/SimAI.calendar.conf"
+TEMPLATE_CONF="${ROOT_DIR}/astra-sim-alibabacloud/inputs/config/SimAI.conf"
 CONF="${OUTPUT_DIR}/SimAI.conf"
 [[ -f "${TEMPLATE_CONF}" ]] || die "Missing config template: ${TEMPLATE_CONF}"
 cp "${TEMPLATE_CONF}" "${CONF}"
@@ -242,6 +303,10 @@ override_conf_key "CALENDAR_GRANULARITY_MODE" "${GRANULARITY}"
 override_conf_key "CALENDAR_ALGORITHM" "${ALGORITHM}"
 override_conf_key "CALENDAR_TRACE_ENABLE" "1"
 override_conf_key "CALENDAR_TRACE_FILE" "${OUTPUT_DIR}/calendar_trace.csv"
+override_conf_key "TRACE_OUTPUT_FILE" "${OUTPUT_DIR}/trace.tr"
+override_conf_key "FCT_OUTPUT_FILE" "${OUTPUT_DIR}/fct.txt"
+override_conf_key "PFC_OUTPUT_FILE" "${OUTPUT_DIR}/pfc.txt"
+override_conf_key "ENABLE_TRACE" "0"
 
 cat > "${OUTPUT_DIR}/metadata.json" <<EOF
 {
@@ -258,12 +323,25 @@ cat > "${OUTPUT_DIR}/metadata.json" <<EOF
 EOF
 
 echo "[run_single] mode=${MODE} granularity=${GRANULARITY} algorithm=${ALGORITHM} gpus=${GPUS} operator=${OPERATOR} msg_bytes=${MSG_BYTES}"
-echo "[run_single] workload=${OUTPUT_DIR}/workload.json"
+echo "[run_single] workload_json=${OUTPUT_DIR}/workload.json"
+echo "[run_single] workload_txt=${WORKLOAD_TXT}"
 echo "[run_single] config=${CONF}"
 echo "[run_single] output=${OUTPUT_DIR}"
 
 write_empty_e2e_times() {
     printf '[]\n' > "${OUTPUT_DIR}/e2e_times.json"
+}
+
+write_run_status() {
+    local status="$1"
+    local exit_code="$2"
+    cat > "${OUTPUT_DIR}/run_status.json" <<EOF
+{
+  "status": "${status}",
+  "exit_code": ${exit_code},
+  "timeout_seconds": ${SIM_TIMEOUT_SECONDS}
+}
+EOF
 }
 
 extract_e2e_times() {
@@ -286,6 +364,7 @@ patterns = [
     re.compile(r"\be2e_us=([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r"\bE2E_US\s*,\s*([0-9]+(?:\.[0-9]+)?)"),
     re.compile(r'"e2e_us"\s*:\s*([0-9]+(?:\.[0-9]+)?)'),
+    re.compile(r"all passes finished at time:\s*([0-9]+(?:\.[0-9]+)?)"),
 ]
 samples = []
 for line in stdout_log.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -300,18 +379,39 @@ PY
 }
 
 SIMULATOR="${ROOT_DIR}/bin/SimAI_simulator"
+TOPOLOGY="${ROOT_DIR}/Spectrum-X_${GPUS}g_8gps_100Gbps_A100"
 if "${DRY_RUN}"; then
     echo "[run_single] Dry-run mode: metadata and config written."
     write_empty_e2e_times
+    write_run_status "dry_run" 0
 elif [[ -x "${SIMULATOR}" ]]; then
-    "${SIMULATOR}" \
-        --network-conf "${CONF}" \
-        --workload "${OUTPUT_DIR}/workload.json" \
-        > "${OUTPUT_DIR}/stdout.log" 2>&1
+    [[ -f "${TOPOLOGY}" ]] || die "Missing topology: ${TOPOLOGY}"
+    set +e
+    (
+        cd "${OUTPUT_DIR}"
+        /usr/bin/timeout "${SIM_TIMEOUT_SECONDS}s" env AS_SEND_LAT=3 AS_NVLS_ENABLE=1 "${SIMULATOR}" \
+            -t 1 \
+            -w "${WORKLOAD_TXT}" \
+            -n "${TOPOLOGY}" \
+            -c "${CONF}" \
+            > "${OUTPUT_DIR}/stdout.log" 2>&1
+    )
+    sim_exit=$?
+    set -e
+    if [[ "${sim_exit}" -eq 0 ]]; then
+        write_run_status "success" "${sim_exit}"
+    elif [[ "${sim_exit}" -eq 124 ]]; then
+        echo "[run_single] WARNING: Simulation timed out after ${SIM_TIMEOUT_SECONDS}s" >&2
+        write_run_status "timeout" "${sim_exit}"
+    else
+        echo "[run_single] WARNING: Simulation exited with code ${sim_exit}" >&2
+        write_run_status "failed" "${sim_exit}"
+    fi
     extract_e2e_times
     echo "[run_single] Simulation complete. Logs in ${OUTPUT_DIR}/stdout.log"
 else
     echo "[run_single] WARNING: Simulator binary not found at ${SIMULATOR}"
     echo "[run_single] Dry-run mode: metadata and config written."
     write_empty_e2e_times
+    write_run_status "simulator_missing" 127
 fi

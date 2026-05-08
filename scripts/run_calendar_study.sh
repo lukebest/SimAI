@@ -54,6 +54,7 @@ OPERATORS=(
     "moe_combine"
     "alltoall_ep"
     "rs_ag_fused"
+    "compute_overlap"
     "moe_pipeline"
 )
 GRANULARITIES=("operator" "phase" "chunk" "packet" "slot")
@@ -122,12 +123,31 @@ if "${DRY_RUN}"; then
     exit 0
 fi
 
+for gpus in "${GPU_COUNTS[@]}"; do
+    topo="${ROOT_DIR}/Spectrum-X_${gpus}g_8gps_100Gbps_A100"
+    if [[ ! -f "${topo}" ]]; then
+        python3 "${ROOT_DIR}/astra-sim-alibabacloud/inputs/topo/gen_Topo_Template.py" \
+            -topo Spectrum-X \
+            -g "${gpus}" \
+            -gt A100 \
+            -bw 100Gbps \
+            -nvbw 2400Gbps
+    fi
+done
+
 if command -v parallel >/dev/null 2>&1; then
     parallel -j "${PARALLEL}" < "${JOBS_FILE}"
 else
+    running=0
     while IFS= read -r cmd; do
-        eval "${cmd}"
+        bash -lc "${cmd}" &
+        running=$((running + 1))
+        if [[ "${running}" -ge "${PARALLEL}" ]]; then
+            wait -n
+            running=$((running - 1))
+        fi
     done < "${JOBS_FILE}"
+    wait
 fi
 
 echo "[DONE] All ${RUN_IDX} runs completed."

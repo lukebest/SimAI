@@ -13,3 +13,4 @@ venv
 *.csv
 *.txt
 simai_trace_output.bin
+*.pyc

@@ -1,196 +1,112 @@
 # Calendar-Based Switch Simulation Report
 
-**Date:** 2026-05-07  
-**Project:** SimAI  
-**Input data:** `results/example-EndToEnd.csv`, `results/test-EndToEnd.csv`  
-**Report type:** Initial EndToEnd CSV analysis against the calendar-switch study plan
+**Date:** 2026-05-07
+**Project:** SimAI
+**Sweep data:** `results/calendar_study_full_20260507_timeout`
+**Machine-readable analysis:** `results/calendar_study_full_20260507_timeout/analysis_report.json`
+**Report type:** Full plan-compliant sweep with bounded per-run timeout
 
 ## Executive Summary
 
-The available simulation outputs are SimAI EndToEnd CSV summaries, not the full calendar-switch sweep output described in the plan. They do not yet contain `calendar_switch` versus `packet_switch` mode labels, granularity labels (`operator`, `phase`, `chunk`, `packet`, `slot`), scheduling algorithm labels (`solstice`, `bvn`, `round_robin`), slot utilization, or per-run `e2e_times.json`.
+The full experiment matrix from the spec was executed: **960 runs** = 60 packet-switch baselines plus 900 calendar-switch configurations across 10 operators, 5 granularities, 3 algorithms, 2 GPU counts, and 3 message sizes.
 
-Within the available CSVs, the `test-` run improves total time versus `example-` by **139,401 raw time units**, a **1.85% reduction**:
+Of those runs, **680 completed**, **280 timed out** under the 180-second per-run guard, and **604 calendar runs** had both valid E2E samples and matching packet-switch baselines. The timeout guard was necessary because several 16-GPU calendar allreduce-style configurations stopped making progress in ns-3 calendar gating.
 
-- `example-` total time: `7,545,619`
-- `test-` total time: `7,406,218`
-- total exposed communication drops from `2,656,839` to `2,528,453`, a **4.83% reduction**
-- total compute is unchanged at `4,542,795`
-- bubble time drops by **3.18%**
+Best observed valid calendar result: **compute_overlap**, `slot` granularity, `bvn`, 16 GPUs, 33,554,432 bytes, with p95 ratio **0.978** versus baseline. Only **5 / 604** valid calendar comparisons beat packet switching, so the overall result is that calendar switching is not broadly beneficial under the current zero-reconfiguration, single-switch ns-3 implementation.
 
-The main communication shift is not uniform:
+The strongest pattern is that `slot` granularity is the only granularity class with meaningful wins, while `operator`, `phase`, `chunk`, and `packet` are effectively tied in this current implementation. This indicates the current GranularityController wiring exposes calendar mode mainly through switch gating behavior rather than materially different per-boundary demand recomputation for the SimAI text workload path.
 
-- `Expose_EP_comm` improves strongly: **-296,150** (**-24.22%**)
-- `Expose DP comm` improves: **-19,742** (**-48.95%**)
-- `Expose DP_EP comm` regresses: **+82,990** (**+7.78%**)
-- `Expose TP comm` regresses: **+104,515** (**+31.99%**)
+## Sweep Coverage
 
-This suggests the `test-` configuration reduces exposed MoE/EP communication enough to offset worse TP and DP_EP exposure.
+| Metric | Value |
+|---|---:|
+| Planned runs | 960 |
+| Packet-switch baseline runs | 60 |
+| Calendar-switch runs | 900 |
+| Successful process exits | 680 |
+| Timeout exits | 280 |
+| Valid matched calendar comparisons | 604 |
+| Empty calendar E2E samples | 296 |
+| Missing baselines | 0 |
+| Best p95 ratio | 0.978 |
+| Mean p95 ratio over valid comparisons | 2.047 |
 
-## Available Data and Scope
+Timeouts were concentrated at 16 GPUs:
 
-The two files have the same structure:
+| GPU count | Success | Timeout |
+|---:|---:|---:|
+| 8 | 480 | 0 |
+| 16 | 200 | 280 |
 
-- first two rows: whole-run summary
-- remaining rows: per-layer/operator timing and communication breakdown
-- layer rows: `1789` in both files
+## Best Configuration By Operator
 
-The CSVs appear to represent analytical EndToEnd outputs rather than the full ns-3 calendar-switch study matrix. Therefore, this report can assess operator hotspots and explain what the calendar-switch study should prioritize, but it cannot yet rank calendar request granularities or scheduling algorithms from measured calendar-switch runs.
+| Operator | Valid comparisons | Calendar wins | Best granularity | Best algorithm | GPU | Message bytes | Best p95 ratio | Mean ratio | Timeouts |
+|---|---:|---:|---|---|---:|---:|---:|---:|---:|
+| `allgather` | 62 | 1 | `slot` | `round_robin` | 16 | 1048576 | 0.995 | 2.333 | 28 |
+| `allreduce_ring` | 62 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 2.356 | 28 |
+| `allreduce_tree` | 62 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 2.356 | 28 |
+| `alltoall_ep` | 58 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 1.489 | 28 |
+| `compute_overlap` | 58 | 3 | `slot` | `bvn` | 16 | 33554432 | 0.978 | 1.907 | 32 |
+| `moe_combine` | 58 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 1.489 | 28 |
+| `moe_dispatch` | 58 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 1.489 | 28 |
+| `moe_pipeline` | 62 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 2.159 | 28 |
+| `reduce_scatter` | 62 | 0 | `chunk` | `bvn` | 8 | 1048576 | 1.000 | 2.329 | 28 |
+| `rs_ag_fused` | 62 | 1 | `slot` | `solstice` | 16 | 1048576 | 1.000 | 2.443 | 24 |
 
-## Whole-Run Comparison
+## Granularity And Algorithm Summary
 
-`test-` is faster mainly because exposed communication shrinks while compute stays fixed.
+| Granularity | Valid comparisons | Wins vs baseline | Mean ratio | Best ratio |
+|---|---:|---:|---:|---:|
+| `operator` | 106 | 0 | 2.491 | 1.000 |
+| `phase` | 106 | 0 | 2.491 | 1.000 |
+| `chunk` | 106 | 0 | 2.491 | 1.000 |
+| `packet` | 106 | 0 | 2.491 | 1.000 |
+| `slot` | 180 | 5 | 1.000 | 0.978 |
 
-- Total time: `7,545,619` -> `7,406,218`
-- Delta: `-139,401`
-- Relative change: `-1.85%`
+| Algorithm | Valid comparisons | Wins vs baseline | Mean ratio | Best ratio |
+|---|---:|---:|---:|---:|
+| `solstice` | 180 | 2 | 1.000 | 0.978 |
+| `bvn` | 180 | 1 | 1.000 | 0.978 |
+| `round_robin` | 244 | 2 | 3.591 | 0.978 |
 
-Breakdown by high-level exposed communication class:
+## Interpretation
 
-- DP: `40,332` -> `20,590`, delta `-19,742`
-- DP_EP: `1,067,010` -> `1,150,000`, delta `+82,990`
-- TP: `326,686` -> `431,201`, delta `+104,515`
-- EP: `1,222,811` -> `926,661`, delta `-296,150`
-- PP: unchanged at `0`
+- **Collectives:** `allreduce_ring`, `allreduce_tree`, and `reduce_scatter` do not show valid calendar wins in this sweep. Several 16-GPU calendar runs timed out, indicating the current calendar gating path can block progress for larger ring-style collective traffic.
+- **MoE and EP traffic:** `alltoall_ep`, `moe_dispatch`, and `moe_combine` complete at 8 GPUs and have stable baselines, but their best valid ratios are approximately 1.0. The current SimAI workload path uses generated `ALLTOALL_EP` microbenchmarks plus JSON demand artifacts; it does not yet replay real expert-gating traces into ns-3 packet injection.
+- **Fused operators:** `compute_overlap` produced the best observed ratio, 0.978, at slot granularity. `rs_ag_fused` had one near-tie win at 0.9999. These are narrow wins, not enough to claim broad calendar advantage.
+- **Granularity:** `slot` is the only granularity class with wins. Other granularities produce identical aggregate behavior in many cases because the current text workload injection exposes one or two communication layers rather than native per-phase/chunk packet-boundary callbacks.
+- **Algorithms:** Solstice and BvN have similar mean ratios near 1.0 over valid comparisons. Round-robin has a much worse mean ratio because it includes more completed slow configurations instead of timing out in the same pattern.
 
-The net exposed communication reduction is:
+## Plan Compliance Notes
 
-- `2,656,839` -> `2,528,453`
-- Delta: `-128,386`
-- Relative change: `-4.83%`
+Covered by this sweep:
 
-## Operator Hotspots
+- 10 operator labels from the spec, including `compute_overlap`.
+- 5 request granularities: `operator`, `phase`, `chunk`, `packet`, `slot`.
+- 3 calendar algorithms: `solstice`, `bvn`, `round_robin`.
+- 8-GPU and 16-GPU scales. 16-GPU results include substantial timeout evidence.
+- 3 message sizes: 1 MiB, 32 MiB, 256 MiB.
+- Packet-switch baselines for every `(operator, GPU count, message size)`.
 
-The largest exposed communication contributors are MoE-related.
+Remaining limitations:
 
-In `example-`:
+- E2E is extracted from SimAI stdout `all passes finished at time`, so units are SimAI raw time/cycles rather than independently instrumented packet-level operator microseconds.
+- Slot utilization, queue occupancy, PFC/CNP counts, and slot waiting distributions are not yet parsed into the report. The generated run directories retain `stdout.log`, `fct.txt`, `trace.tr`, and `calendar_trace.csv` paths where available for follow-up instrumentation.
+- MoE runs use synthetic demand matrices and `ALLTOALL_EP` SimAI microbenchmarks. They are reproducible but not a real DeepSeek-V3 token trace replay.
+- Timeout entries are part of the full sweep result. They should be treated as failures/non-convergence for the current calendar switch implementation, not as latency wins or losses.
 
-- `moe_grad_norm2`: `711,340`
-- `moe_grad_norm1`: `355,670`
-- `grad_param_comm`: `26,888`
-- `grad_gather`: `13,444`
-- repeated `mlp_moelayer` rows: `3,184` per row
+## Reproduction
 
-In `test-`:
+The sweep was run with:
 
-- `moe_grad_norm2`: `766,667`
-- `moe_grad_norm1`: `383,333`
-- `grad_param_comm`: `13,727`
-- `grad_gather`: `6,863`
-- repeated `mlp_moelayer` rows: `2,414` per row
+```bash
+SIM_TIMEOUT_SECONDS=180 scripts/run_calendar_study.sh --parallel 8 --results-dir results/calendar_study_full_20260507_timeout
+python3 scripts/analyze_results.py --results-dir results/calendar_study_full_20260507_timeout --output results/calendar_study_full_20260507_timeout/analysis_report.json
+```
 
-Aggregated by layer name, the largest deltas are:
+Important runtime fixes made before the sweep:
 
-- `mlp_moelayer`: `1,492,992` -> `1,286,784`, delta `-206,208`
-- `moe_grad_norm2`: `711,340` -> `766,667`, delta `+55,327`
-- `moe_grad_norm1`: `355,670` -> `383,333`, delta `+27,663`
-- `grad_param_comm`: `26,888` -> `13,727`, delta `-13,161`
-- `attention_row`: `33,792` -> `43,392`, delta `+9,600`
-- `grad_gather`: `13,444` -> `6,863`, delta `-6,581`
-- `attention_column`: `16,896` -> `21,696`, delta `+4,800`
-
-The dominant improvement comes from repeated MoE MLP-layer communication. The dominant regressions are MoE gradient norm and TP attention communication.
-
-## Calendar-Switch Implications
-
-The plan asks which calendar request granularity minimizes end-to-end completion time for collective, fused, and MoE operators. The available CSVs do not directly answer that yet, but they identify where calendar scheduling should focus first.
-
-### MoE Dispatch/Combine and EP Traffic
-
-MoE/EP traffic is the largest exposed-communication component in both runs. It is also dynamic because token-to-expert routing can be skewed and data-dependent.
-
-Recommended first calendar granularity candidates:
-
-- `phase/stage`: natural boundary after MoE gating, once the actual expert demand matrix is known
-- `chunk/tile`: useful when expert load skew is high and a single phase schedule would over-allocate to stale demand
-- `slot`: useful as a stress point, but should be treated as high-control-overhead unless zero-overhead oracle assumptions are retained
-
-The available data supports prioritizing MoE `dispatch`, `combine`, `alltoall_ep`, and fused `moe_pipeline` experiments before broadening the sweep.
-
-### Deterministic Collectives
-
-TP-related communication regresses in `test-`, especially `attention_row` and `attention_column`. These are more predictable than MoE traffic and are better suited to coarser calendar requests.
-
-Recommended first granularity candidates:
-
-- `operator` for simple deterministic collective experiments
-- `phase/stage` for ring/tree collectives where each phase has a different active port pairing
-- `chunk/tile` for large messages where pipeline fill/drain effects matter
-
-For allreduce/allgather/reduce_scatter, the plan's comparison of `operator -> phase -> chunk -> packet -> slot` remains valid, but the current CSVs only show aggregate exposed communication, not measured calendar completion time.
-
-### Fused Operators
-
-The available EndToEnd format does not mark fused operator boundaries explicitly. Based on the plan, fused operators should be analyzed as high-level phases:
-
-- `RS_AG_FUSED`: reduce_scatter phase plus allgather phase
-- `COMPUTE_OVERLAP`: communication phases interleaved with compute
-- `MOE_PIPELINE`: dispatch, expert compute, combine
-
-The current data suggests fused MoE should be prioritized, because MoE-layer communication is the largest repeated exposed component.
-
-## What Cannot Be Claimed Yet
-
-The plan's final report requires results that are not present in these CSVs:
-
-- calendar versus packet-switch baseline ratio
-- per-operator heatmaps over granularity and algorithm
-- Solstice versus BvN versus RoundRobin measured comparison
-- p50/p95/p99 E2E distributions from `e2e_times.json`
-- slot utilization
-- slot waiting time
-- queue occupancy
-- PFC/CNP event counts
-- message-size sensitivity across the planned matrix
-- MoE skew sensitivity across uniform, Zipf, and power-law expert distributions
-
-Because those fields are absent, this report should not be interpreted as proof that one calendar granularity or scheduling algorithm is best. It is an initial EndToEnd hotspot report to guide the next full sweep.
-
-## Recommended Next Simulation Sweep
-
-To produce the full plan-compliant report, run the calendar study runner on a reduced but meaningful matrix first:
-
-1. Operators:
-   - `allreduce_ring`
-   - `allgather`
-   - `reduce_scatter`
-   - `alltoall_ep`
-   - `moe_dispatch`
-   - `moe_combine`
-   - `rs_ag_fused`
-   - `moe_pipeline`
-
-2. GPU scale:
-   - start with `8`
-   - add `16` after the first matrix is validated
-
-3. Granularity:
-   - `operator`
-   - `phase`
-   - `chunk`
-   - `packet`
-   - `slot`
-
-4. Algorithms:
-   - `solstice`
-   - `bvn`
-   - `round_robin`
-
-5. Required outputs per run:
-   - `metadata.json`
-   - `workload.json`
-   - `SimAI.conf`
-   - `stdout.log`
-   - `e2e_times.json`
-   - calendar trace with slot admission/wait metrics when available
-
-After this sweep, `scripts/analyze_results.py` can produce the p95 baseline ratios and recommendations required by the plan.
-
-## Current Conclusion
-
-Based on the currently available `example-` versus `test-` EndToEnd CSVs:
-
-- `test-` is the better configuration by total time, improving by **1.85%**
-- the gain comes from lower exposed communication, especially EP/MoE-layer communication
-- MoE and fused MoE operators should be the first calendar-switch targets
-- deterministic collectives still need explicit calendar granularity sweeps before selecting `operator`, `phase`, or `chunk`
-- no measured Solstice/BvN/RoundRobin ranking can be claimed until the full calendar-switch sweep produces per-run E2E outputs
+- `run_single_experiment.sh` now invokes `SimAI_simulator` with the actual `-t/-w/-n/-c` CLI and writes local trace/FCT/PFC output paths.
+- `run_single_experiment.sh` now generates SimAI text workloads in addition to JSON demand artifacts.
+- `run_calendar_study.sh` now includes `compute_overlap` and supports bash-native parallel fallback when GNU `parallel` is unavailable.
+- `RdmaHw::SendPacketComplete` now returns `0` on the success path, avoiding the previous illegal-instruction crash from falling off a non-void function.
