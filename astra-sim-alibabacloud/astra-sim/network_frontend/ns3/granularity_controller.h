@@ -537,10 +537,29 @@ class GranularityController {
     }
     if (m_mode == GranularityMode::SLOT) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
-      return false;
+      return true;
     }
     if (AllTagFieldsInvalid(tag_id, flow_id, chunk_id)) {
-      return false;
+      // Fallback path for workloads that do not carry boundary tags.
+      // Keep operator mode coarse, and allow finer modes to react per flow.
+      bool changed = !m_hasLast;
+      if (!changed) {
+        switch (m_mode) {
+          case GranularityMode::OPERATOR:
+            changed = false;
+            break;
+          case GranularityMode::PHASE:
+          case GranularityMode::CHUNK:
+            changed = true;
+            break;
+          case GranularityMode::PACKET:
+          case GranularityMode::SLOT:
+            changed = true;
+            break;
+        }
+      }
+      UpdateLastIds(tag_id, flow_id, chunk_id);
+      return changed;
     }
 
     bool changed = !m_hasLast;

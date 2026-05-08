@@ -225,7 +225,16 @@ write_simai_workload() {
     local line_count=1
     local tp_size="${GPUS}"
     local ep_size=1
+    local ag_phases=$(( GPUS - 1 ))
+    if [[ "${ag_phases}" -lt 1 ]]; then
+        ag_phases=1
+    fi
+    local ag_phase_bytes=$(( MSG_BYTES / ag_phases ))
+    if [[ "${ag_phase_bytes}" -lt 1 ]]; then
+        ag_phase_bytes=1
+    fi
     case "${OPERATOR}" in
+        allgather) line_count="${ag_phases}" ;;
         rs_ag_fused|compute_overlap|moe_pipeline) line_count=2 ;;
     esac
     case "${OPERATOR}" in
@@ -245,7 +254,9 @@ write_simai_workload() {
                 printf 'allreduce_%s     -1 1  ALLREDUCE   %s      1       NONE 0        1      NONE   0      1\n' "${ALGORITHM}" "${MSG_BYTES}"
                 ;;
             allgather)
-                printf 'allgather     -1 1  ALLGATHER   %s      1       NONE 0        1      NONE   0      1\n' "${MSG_BYTES}"
+                for (( phase = 0; phase < ag_phases; phase++ )); do
+                    printf 'allgather_phase_%s     -1 1  ALLGATHER   %s      1       NONE 0        1      NONE   0      1\n' "${phase}" "${ag_phase_bytes}"
+                done
                 ;;
             reduce_scatter)
                 printf 'reduce_scatter     -1 1  REDUCESCATTER   %s      1       NONE 0        1      NONE   0      1\n' "${MSG_BYTES}"
