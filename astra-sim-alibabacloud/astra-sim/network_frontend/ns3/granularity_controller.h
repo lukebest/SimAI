@@ -530,6 +530,15 @@ class GranularityController {
     m_pendingFlows = 0;
   }
 
+  void EnsureNumNodes(uint32_t num_nodes) {
+    if (num_nodes == 0) {
+      num_nodes = 1;
+    }
+    if (num_nodes > m_numNodes) {
+      m_numNodes = num_nodes;
+    }
+  }
+
  private:
   bool AllTagFieldsInvalid(int tag_id, int flow_id, int chunk_id) const {
     return tag_id < 0 && flow_id < 0 && chunk_id < 0;

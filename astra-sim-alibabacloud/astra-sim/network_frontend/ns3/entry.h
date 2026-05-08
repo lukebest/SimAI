@@ -105,6 +105,7 @@ inline void AppendCalendarTrace(const std::string& event,
 }
 inline void EnsureGranularityController(uint32_t num_nodes) {
   if (g_granularity_controller) {
+    g_granularity_controller->EnsureNumNodes(num_nodes);
     return;
   }
   if (num_nodes == 0) {
@@ -112,6 +113,16 @@ inline void EnsureGranularityController(uint32_t num_nodes) {
   }
   g_granularity_controller = std::make_unique<calendar::GranularityController>(
       calendar::ParseGranularityMode(calendar_granularity_mode), num_nodes);
+}
+
+inline uint32_t CountTrafficEndpoints() {
+  uint32_t endpoints = 0;
+  for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
+    if (n.Get(nodeIndex)->GetNodeType() == 0) {
+      endpoints++;
+    }
+  }
+  return std::max(1u, endpoints);
 }
 
 inline void PollCalendarSwitchMetrics() {
@@ -283,11 +294,11 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
   bool nvls_on = request->flowTag.nvls_on;
   if (enable_calendar_switch) {
     StartCalendarSwitchMetricsPolling();
-    uint32_t observed_nodes = 1;
+    uint32_t observed_nodes = CountTrafficEndpoints();
     if (src >= 0 && dst >= 0) {
       observed_nodes = static_cast<uint32_t>(std::max(src, dst) + 1);
     }
-    EnsureGranularityController(observed_nodes);
+    EnsureGranularityController(std::max(CountTrafficEndpoints(), observed_nodes));
     g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
                                           request->flowTag);
     if (g_granularity_controller->ShouldReschedule(request->flowTag)) {
@@ -306,9 +317,6 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
         Ptr<CalendarSwitchNode> calendarSwitch =
             DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
         if (calendarSwitch) {
-          calendarSwitch->ConfigureMetricsTrace(
-              calendar_trace_enable != 0,
-              calendar_trace_file + ".switch_metrics.csv");
           calendarSwitch->LoadSchedule(schedule, calendar_slot_ns,
                                        calendar_frame_slots);
           applied_switches++;
