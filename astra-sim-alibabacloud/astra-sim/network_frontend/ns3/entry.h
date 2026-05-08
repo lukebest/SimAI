@@ -34,6 +34,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <fstream>
 #include <ns3/rdma-client-helper.h>
 #include <ns3/rdma-client.h>
 #include <ns3/rdma-driver.h>
@@ -59,6 +60,43 @@ std::map<std::pair<std::pair<int, int>,int>, AstraSim::ncclFlowTag> receiver_pen
 
 std::map<std::pair<int, std::pair<int, int>>, AstraSim::ncclFlowTag> sender_src_port_map; 
 std::unique_ptr<calendar::GranularityController> g_granularity_controller;
+
+inline void AppendCalendarTrace(const std::string& event,
+                                int src,
+                                int dst,
+                                int tag_id,
+                                int flow_id,
+                                int chunk_id,
+                                double demand_sum,
+                                size_t schedule_entries,
+                                uint32_t applied_switches) {
+  if (calendar_trace_enable == 0 || calendar_trace_file.empty()) {
+    return;
+  }
+  static std::ofstream trace;
+  static bool header_written = false;
+  if (!trace.is_open()) {
+    trace.open(calendar_trace_file, std::ios::out | std::ios::app);
+    if (!trace.is_open()) {
+      return;
+    }
+  }
+  if (!header_written) {
+    trace << "sim_ns,event,src,dst,tag_id,flow_id,chunk_id,demand_sum,schedule_entries,applied_switches\n";
+    header_written = true;
+  }
+  trace << Simulator::Now().GetNanoSeconds() << ","
+        << event << ","
+        << src << ","
+        << dst << ","
+        << tag_id << ","
+        << flow_id << ","
+        << chunk_id << ","
+        << demand_sum << ","
+        << schedule_entries << ","
+        << applied_switches << "\n";
+  trace.flush();
+}
 inline void EnsureGranularityController(uint32_t num_nodes) {
   if (g_granularity_controller) {
     return;
@@ -157,14 +195,28 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
         ns3Entry.slots = entry.slots;
         schedule.entries.push_back(ns3Entry);
       }
+      uint32_t applied_switches = 0;
       for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
         Ptr<CalendarSwitchNode> calendarSwitch =
             DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
         if (calendarSwitch) {
           calendarSwitch->LoadSchedule(schedule, calendar_slot_ns,
                                        calendar_frame_slots);
+          applied_switches++;
         }
       }
+      double demand_sum = 0.0;
+      for (const auto& row : demand) {
+        for (double value : row) {
+          if (value > 0.0) {
+            demand_sum += value;
+          }
+        }
+      }
+      AppendCalendarTrace("reschedule", src, dst, request->flowTag.tag_id,
+                          request->flowTag.current_flow_id,
+                          request->flowTag.chunk_id, demand_sum,
+                          schedule.entries.size(), applied_switches);
     }
   }
   int pg = 3, dport = 100;
