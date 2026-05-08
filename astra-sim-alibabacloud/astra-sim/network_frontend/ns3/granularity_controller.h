@@ -539,6 +539,9 @@ class GranularityController {
     const uint32_t flowThreshold = GetFlowThresholdForMode();
     const bool thresholdReached =
         flowThreshold > 0 && m_pendingFlows >= flowThreshold;
+    const bool allowInitialSchedule =
+        m_hasScheduled || m_mode == GranularityMode::PACKET ||
+        m_mode == GranularityMode::SLOT || thresholdReached;
 
     if (m_mode == GranularityMode::PACKET) {
       UpdateLastIds(tag_id, flow_id, chunk_id);
@@ -560,7 +563,7 @@ class GranularityController {
       // In this case, rely on flow-count thresholds to approximate boundaries.
       bool changed = false;
       UpdateLastIds(tag_id, flow_id, chunk_id);
-      const bool should = !m_hasScheduled || changed || thresholdReached;
+      const bool should = allowInitialSchedule && (changed || thresholdReached);
       if (should) {
         m_hasScheduled = true;
         m_pendingFlows = 0;
@@ -587,7 +590,7 @@ class GranularityController {
     }
 
     UpdateLastIds(tag_id, flow_id, chunk_id);
-    const bool should = !m_hasScheduled || changed || thresholdReached;
+    const bool should = allowInitialSchedule && (changed || thresholdReached);
     if (should) {
       m_hasScheduled = true;
       m_pendingFlows = 0;

@@ -23,6 +23,8 @@ MOE_BURST_INTERVAL=4
 MOE_BURST_WIDTH=2
 MOE_GATE_TRACE_OUTPUT=""
 NVLS_ENABLE=1
+TOPOLOGY_FILE=""
+CALENDAR_TRACE_ENABLE=1
 
 usage() {
     cat <<EOF
@@ -44,6 +46,8 @@ Usage: $0 [options]
   --moe-burst-interval N
   --moe-burst-width N
   --nvls-enable 0|1
+  --topology-file PATH
+  --calendar-trace-enable 0|1
 EOF
 }
 
@@ -78,6 +82,8 @@ while [[ $# -gt 0 ]]; do
         --moe-burst-interval) require_value "$1" "${2:-}"; MOE_BURST_INTERVAL="$2"; shift 2 ;;
         --moe-burst-width) require_value "$1" "${2:-}"; MOE_BURST_WIDTH="$2"; shift 2 ;;
         --nvls-enable) require_value "$1" "${2:-}"; NVLS_ENABLE="$2"; shift 2 ;;
+        --topology-file) require_value "$1" "${2:-}"; TOPOLOGY_FILE="$2"; shift 2 ;;
+        --calendar-trace-enable) require_value "$1" "${2:-}"; CALENDAR_TRACE_ENABLE="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1" ;;
@@ -445,7 +451,7 @@ override_conf_key "CALENDAR_SLOT_NS" "${SLOT_NS}"
 override_conf_key "CALENDAR_FRAME_SLOTS" "${FRAME_SLOTS}"
 override_conf_key "CALENDAR_GRANULARITY_MODE" "${GRANULARITY}"
 override_conf_key "CALENDAR_ALGORITHM" "${ALGORITHM}"
-override_conf_key "CALENDAR_TRACE_ENABLE" "1"
+override_conf_key "CALENDAR_TRACE_ENABLE" "${CALENDAR_TRACE_ENABLE}"
 override_conf_key "CALENDAR_TRACE_FILE" "${OUTPUT_DIR}/calendar_trace.csv"
 override_conf_key "TRACE_OUTPUT_FILE" "${OUTPUT_DIR}/trace.tr"
 override_conf_key "FCT_OUTPUT_FILE" "${OUTPUT_DIR}/fct.txt"
@@ -466,6 +472,8 @@ cat > "${OUTPUT_DIR}/metadata.json" <<EOF
   "moe_gate_trace_mode": "${MOE_GATE_TRACE_MODE}",
   "moe_gate_trace_file": "${MOE_GATE_TRACE_OUTPUT}",
   "nvls_enable": ${NVLS_ENABLE},
+  "calendar_trace_enable": ${CALENDAR_TRACE_ENABLE},
+  "topology_file": "${TOPOLOGY_FILE:-Spectrum-X_${GPUS}g_8gps_100Gbps_A100}",
   "switch_metrics_file": "${OUTPUT_DIR}/calendar_trace.csv.switch_metrics.csv",
   "timestamp": "$(date -Iseconds)"
 }
@@ -528,7 +536,14 @@ PY
 }
 
 SIMULATOR="${ROOT_DIR}/bin/SimAI_simulator"
-TOPOLOGY="${ROOT_DIR}/Spectrum-X_${GPUS}g_8gps_100Gbps_A100"
+if [[ -n "${TOPOLOGY_FILE}" ]]; then
+    TOPOLOGY="${TOPOLOGY_FILE}"
+    if [[ "${TOPOLOGY}" != /* ]]; then
+        TOPOLOGY="${ROOT_DIR}/${TOPOLOGY}"
+    fi
+else
+    TOPOLOGY="${ROOT_DIR}/Spectrum-X_${GPUS}g_8gps_100Gbps_A100"
+fi
 if "${DRY_RUN}"; then
     echo "[run_single] Dry-run mode: metadata and config written."
     write_empty_e2e_times

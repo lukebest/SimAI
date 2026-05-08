@@ -61,8 +61,10 @@ namespace MockNccl {
         }
         NVSwitchs.clear();
         for(int idx:TPnodes){
-          NVSwitchs.push_back(_NVSwitch[idx]);
-          GroupIndex[std::make_pair(_NVSwitch[idx],TP)] = all_group_idx;
+          if (idx >= 0 && static_cast<size_t>(idx) < _NVSwitch.size()) {
+            NVSwitchs.push_back(_NVSwitch[idx]);
+            GroupIndex[std::make_pair(_NVSwitch[idx],TP)] = all_group_idx;
+          }
         }
         AllGroups[all_group_idx]=GroupInfo(all_group_idx,TP,nNodesPerTPGroup,_TP_size,ranks,NVSwitchs);
         all_group_idx ++;
@@ -83,8 +85,10 @@ namespace MockNccl {
         }
         NVSwitchs.clear();
         for(int idx:DPnodes){
-          NVSwitchs.push_back(_NVSwitch[idx]);
-          GroupIndex[std::make_pair(_NVSwitch[idx],DP)] = all_group_idx;
+          if (idx >= 0 && static_cast<size_t>(idx) < _NVSwitch.size()) {
+            NVSwitchs.push_back(_NVSwitch[idx]);
+            GroupIndex[std::make_pair(_NVSwitch[idx],DP)] = all_group_idx;
+          }
         }
         AllGroups[all_group_idx]=GroupInfo(all_group_idx,DP,DPnodes.size(),_DP_size,ranks,NVSwitchs);
         all_group_idx ++;
@@ -119,8 +123,10 @@ namespace MockNccl {
             }
             NVSwitchs.clear();
             for(int idx:EPnodes){
-              NVSwitchs.push_back(_NVSwitch[idx]);
-              GroupIndex[std::make_pair(_NVSwitch[idx],EP)] = all_group_idx;
+              if (idx >= 0 && static_cast<size_t>(idx) < _NVSwitch.size()) {
+                NVSwitchs.push_back(_NVSwitch[idx]);
+                GroupIndex[std::make_pair(_NVSwitch[idx],EP)] = all_group_idx;
+              }
             }
             AllGroups[all_group_idx] = GroupInfo(all_group_idx,EP,EPnodes.size(),_EP_size,ranks,NVSwitchs);
             all_group_idx++;
@@ -147,8 +153,10 @@ namespace MockNccl {
             }
             NVSwitchs.clear();
             for (int idx : DP_EP_nodes){
-              NVSwitchs.push_back(_NVSwitch[idx]);
-              GroupIndex[std::make_pair(_NVSwitch[idx], DP_EP)] = all_group_idx;
+              if (idx >= 0 && static_cast<size_t>(idx) < _NVSwitch.size()) {
+                NVSwitchs.push_back(_NVSwitch[idx]);
+                GroupIndex[std::make_pair(_NVSwitch[idx], DP_EP)] = all_group_idx;
+              }
             }
             AllGroups[all_group_idx] = GroupInfo(all_group_idx, DP_EP, DP_EP_nodes.size(), _DP_EP_size, ranks, NVSwitchs);
             all_group_idx++;
@@ -1711,6 +1719,10 @@ namespace MockNccl {
       return {};
     } else {
       std::vector<int> ranks = gp_info.Ranks;
+      if (gp_info.NVSwitchs.empty()) {
+        // No NVSwitch was configured for this group; skip NVLS channels.
+        return {};
+      }
       int NVswitch = gp_info.NVSwitchs[0];
       for (int i = 0; i < ranks.size(); i++) {
         nvlschannel[0][ranks[i]] = ncclTree(-1, ranks[i], NVswitch, {});

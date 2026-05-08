@@ -287,7 +287,7 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
     if (src >= 0 && dst >= 0) {
       observed_nodes = static_cast<uint32_t>(std::max(src, dst) + 1);
     }
-    EnsureGranularityController(std::max(node_num, observed_nodes));
+    EnsureGranularityController(observed_nodes);
     g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
                                           request->flowTag);
     if (g_granularity_controller->ShouldReschedule(request->flowTag)) {
