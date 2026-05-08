@@ -22,6 +22,7 @@ MOE_HOTSPOT_RATIO=4
 MOE_BURST_INTERVAL=4
 MOE_BURST_WIDTH=2
 MOE_GATE_TRACE_OUTPUT=""
+NVLS_ENABLE=1
 
 usage() {
     cat <<EOF
@@ -42,6 +43,7 @@ Usage: $0 [options]
   --moe-hotspot-ratio R
   --moe-burst-interval N
   --moe-burst-width N
+  --nvls-enable 0|1
 EOF
 }
 
@@ -75,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         --moe-hotspot-ratio) require_value "$1" "${2:-}"; MOE_HOTSPOT_RATIO="$2"; shift 2 ;;
         --moe-burst-interval) require_value "$1" "${2:-}"; MOE_BURST_INTERVAL="$2"; shift 2 ;;
         --moe-burst-width) require_value "$1" "${2:-}"; MOE_BURST_WIDTH="$2"; shift 2 ;;
+        --nvls-enable) require_value "$1" "${2:-}"; NVLS_ENABLE="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1" ;;
@@ -115,6 +118,9 @@ done
 
 if [[ ! "${MOE_HOTSPOT_RATIO}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     die "MOE_HOTSPOT_RATIO must be a non-negative number"
+fi
+if [[ "${NVLS_ENABLE}" != "0" && "${NVLS_ENABLE}" != "1" ]]; then
+    die "--nvls-enable must be 0 or 1"
 fi
 
 mkdir -p "${OUTPUT_DIR}"
@@ -459,6 +465,7 @@ cat > "${OUTPUT_DIR}/metadata.json" <<EOF
   "moe_phases": ${MOE_PHASE_COUNT},
   "moe_gate_trace_mode": "${MOE_GATE_TRACE_MODE}",
   "moe_gate_trace_file": "${MOE_GATE_TRACE_OUTPUT}",
+  "nvls_enable": ${NVLS_ENABLE},
   "switch_metrics_file": "${OUTPUT_DIR}/calendar_trace.csv.switch_metrics.csv",
   "timestamp": "$(date -Iseconds)"
 }
@@ -531,7 +538,7 @@ elif [[ -x "${SIMULATOR}" ]]; then
     set +e
     (
         cd "${OUTPUT_DIR}"
-        /usr/bin/timeout "${SIM_TIMEOUT_SECONDS}s" env AS_SEND_LAT=3 AS_NVLS_ENABLE=1 "${SIMULATOR}" \
+        /usr/bin/timeout "${SIM_TIMEOUT_SECONDS}s" env AS_SEND_LAT=3 AS_NVLS_ENABLE="${NVLS_ENABLE}" "${SIMULATOR}" \
             -t 1 \
             -w "${WORKLOAD_TXT}" \
             -n "${TOPOLOGY}" \

@@ -130,7 +130,7 @@ inline void PollCalendarSwitchMetrics() {
 
   if (!g_switch_metrics_header_written) {
     g_switch_metrics_trace
-        << "sim_ns,switch_id,slot_idx,port_id,egress_bytes,"
+        << "sim_ns,switch_type,switch_id,slot_idx,port_id,egress_bytes_q0,egress_bytes_non_q0,"
            "slot_allowed,slot_blocked,total_allowed,total_blocked\n";
     g_switch_metrics_header_written = true;
   }
@@ -138,12 +138,18 @@ inline void PollCalendarSwitchMetrics() {
   const uint64_t sim_ns = static_cast<uint64_t>(Simulator::Now().GetNanoSeconds());
   for (uint32_t nodeIndex = 0; nodeIndex < n.GetN(); ++nodeIndex) {
     Ptr<CalendarSwitchNode> calendarSwitch = DynamicCast<CalendarSwitchNode>(n.Get(nodeIndex));
-    if (!calendarSwitch || !calendarSwitch->m_mmu) {
+    Ptr<NVSwitchNode> nvSwitch = DynamicCast<NVSwitchNode>(n.Get(nodeIndex));
+    if ((!calendarSwitch || !calendarSwitch->m_mmu) &&
+        (!nvSwitch || !nvSwitch->m_mmu)) {
       continue;
     }
 
-    const uint64_t total_allowed = calendarSwitch->GetAllowedPackets();
-    const uint64_t total_blocked = calendarSwitch->GetBlockedPackets();
+    const bool is_calendar = (calendarSwitch != nullptr && calendarSwitch->m_mmu != nullptr);
+    const std::string switch_type = is_calendar ? "calendar" : "nvswitch";
+    const uint64_t total_allowed =
+        is_calendar ? calendarSwitch->GetAllowedPackets() : nvSwitch->GetAllowedPackets();
+    const uint64_t total_blocked =
+        is_calendar ? calendarSwitch->GetBlockedPackets() : nvSwitch->GetBlockedPackets();
     const auto last = g_last_switch_admission_counters.find(nodeIndex);
     uint64_t slot_allowed = total_allowed;
     uint64_t slot_blocked = total_blocked;
@@ -154,26 +160,41 @@ inline void PollCalendarSwitchMetrics() {
     g_last_switch_admission_counters[nodeIndex] =
         std::make_pair(total_allowed, total_blocked);
 
-    const uint32_t slot_idx = calendarSwitch->GetCurrentSlotIndex();
+    uint32_t slot_idx = 0;
+    if (is_calendar) {
+      slot_idx = calendarSwitch->GetCurrentSlotIndex();
+    } else if (calendar_slot_ns > 0) {
+      slot_idx = static_cast<uint32_t>(
+          (Simulator::Now().GetNanoSeconds() / calendar_slot_ns) % std::max(1u, calendar_frame_slots));
+    }
+
     const uint32_t num_ports =
-        std::min(static_cast<uint32_t>(calendarSwitch->GetNDevices()), kSwitchPortCount);
+        std::min(static_cast<uint32_t>(n.Get(nodeIndex)->GetNDevices()), kSwitchPortCount);
     std::vector<std::pair<uint32_t, uint64_t>> active_port_samples;
     active_port_samples.reserve(16);
     for (uint32_t port_id = 0; port_id < num_ports; ++port_id) {
-      uint64_t egress_bytes = 0;
-      for (uint32_t q_idx = 0; q_idx < kSwitchQueueCount; ++q_idx) {
-        egress_bytes += calendarSwitch->m_mmu->egress_bytes[port_id][q_idx];
+      uint64_t q0_bytes =
+          is_calendar ? calendarSwitch->GetPortQueueBytes(port_id, 0)
+                      : nvSwitch->GetPortQueueBytes(port_id, 0);
+      uint64_t non_q0_bytes = 0;
+      for (uint32_t q_idx = 1; q_idx < kSwitchQueueCount; ++q_idx) {
+        non_q0_bytes +=
+            is_calendar ? calendarSwitch->GetPortQueueBytes(port_id, q_idx)
+                        : nvSwitch->GetPortQueueBytes(port_id, q_idx);
       }
-      if (egress_bytes > 0) {
-        active_port_samples.push_back(std::make_pair(port_id, egress_bytes));
+      if (q0_bytes > 0 || non_q0_bytes > 0) {
+        active_port_samples.push_back(
+            std::make_pair(port_id, (q0_bytes << 32) | (non_q0_bytes & 0xffffffffu)));
       }
     }
     if (active_port_samples.empty()) {
       active_port_samples.push_back(std::make_pair(0u, 0u));
     }
     for (const auto& sample : active_port_samples) {
-      g_switch_metrics_trace << sim_ns << "," << nodeIndex << "," << slot_idx << ","
-                             << sample.first << "," << sample.second << ","
+      const uint64_t q0_bytes = sample.second >> 32;
+      const uint64_t non_q0_bytes = sample.second & 0xffffffffu;
+      g_switch_metrics_trace << sim_ns << "," << switch_type << "," << nodeIndex << "," << slot_idx << ","
+                             << sample.first << "," << q0_bytes << "," << non_q0_bytes << ","
                              << slot_allowed << "," << slot_blocked << ","
                              << total_allowed << "," << total_blocked << "\n";
     }

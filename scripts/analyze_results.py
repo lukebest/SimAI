@@ -55,6 +55,8 @@ def _load_calendar_non_e2e_metrics(run_dir: Path) -> dict[str, float]:
         "switch_block_rate": 0.0,
         "switch_max_q_bytes": 0.0,
         "switch_avg_q_bytes": 0.0,
+        "calendar_rows": 0.0,
+        "nvswitch_rows": 0.0,
     }
 
     trace_path = run_dir / "calendar_trace.csv"
@@ -76,6 +78,11 @@ def _load_calendar_non_e2e_metrics(run_dir: Path) -> dict[str, float]:
         with switch_path.open(encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
+                switch_type = row.get("switch_type", "calendar")
+                if switch_type == "nvswitch":
+                    metrics["nvswitch_rows"] += 1.0
+                else:
+                    metrics["calendar_rows"] += 1.0
                 slot_idx = int(float(row.get("slot_idx", 0)))
                 if "attempted" in row:
                     att = float(row.get("attempted", 0.0))
@@ -88,8 +95,11 @@ def _load_calendar_non_e2e_metrics(run_dir: Path) -> dict[str, float]:
                     alw = float(row.get("slot_allowed", 0.0))
                     blk = float(row.get("slot_blocked", 0.0))
                     att = alw + blk
-                    avg_q = float(row.get("egress_bytes", 0.0))
-                    max_q = max(max_q, float(row.get("egress_bytes", 0.0)))
+                    q0 = float(row.get("egress_bytes_q0", 0.0))
+                    non_q0 = float(row.get("egress_bytes_non_q0", row.get("egress_bytes", 0.0)))
+                    total_q = q0 + non_q0
+                    avg_q = total_q
+                    max_q = max(max_q, total_q)
                 slots.add(slot_idx)
                 attempted += att
                 allowed += alw
