@@ -132,6 +132,12 @@ Defaults preserve baseline behavior (`ENABLE_CALENDAR_SWITCH=0`).
 | `COMPUTE_OVERLAP` | Fused | Yes (compute + comm interleave) | Deterministic |
 | `MOE_PIPELINE` | Fused | Yes (dispatch + compute + combine) | Dynamic (dispatch/combine) |
 
+> **Spec update (2026-05-09):**
+> - Experiments are constrained to **GPU=8 only**.
+> - For operators marked **Dynamic** in this table, calendar scheduling only evaluates `chunk` / `packet` / `slot` granularities.
+> - `operator` and `phase` granularities are **not evaluated** for Dynamic operators.
+> - Demand-aware scheduling is disabled for this study variant; calendar uses **Round-Robin only**.
+
 ## 7. Granularity Semantics Per Operator
 
 ### 7.1 Ring AllReduce (N GPUs, message M)
@@ -144,8 +150,8 @@ Defaults preserve baseline behavior (`ENABLE_CALENDAR_SWITCH=0`).
 
 ### 7.2 MoE Dispatch (N GPUs, E experts, T tokens per GPU)
 
-- **operator**: Demand unknown until gating. Use uniform estimate: D[i][j] = T*token_size/N for all i,j.
-- **phase**: After gating, actual demand: D[i][j] = count(tokens from GPU_i routed to expert on GPU_j) * token_size.
+- **operator**: _Not evaluated in this spec revision (Dynamic operator pruning rule)_.
+- **phase**: _Not evaluated in this spec revision (Dynamic operator pruning rule)_.
 - **chunk**: Divide each GPU's outbound tokens into chunks of C tokens, schedule per chunk.
 - **packet**: Per-packet.
 - **slot**: Time-quantum.
@@ -172,18 +178,24 @@ For all A/B comparisons (calendar vs baseline):
 
 Dimensions:
 - Operator type: 10 operators (see Section 6)
-- Granularity: 5 levels
-- Algorithm: 3 (Solstice, BvN, Round-Robin)
-- GPU count: 2 (8, 16)
+- Granularity:
+  - Deterministic operators: 5 levels (`operator`, `phase`, `chunk`, `packet`, `slot`)
+  - Dynamic operators: 3 levels (`chunk`, `packet`, `slot`)
+- Algorithm: 1 (`round_robin`)
+- GPU count: 1 (`8`)
 - Message size: from real traces (Llama-70B gradient sizes for collectives, DeepSeek-V3 MoE token distributions)
 - Switch mode: 2 (calendar, packet-switch baseline)
 
 Pruning rules:
 - Single-phase operators at `phase` granularity collapse to `operator` (report as such, skip separate run).
 - Baseline runs ignore granularity and algorithm (1 run per operator/GPU/size combo).
-- MoE at `operator` granularity is flagged as "uniform demand estimate" variant.
+- Dynamic operators do not run `operator` or `phase` granularity.
+- Calendar scheduling runs in non-demand-aware mode with `round_robin` only.
 
-Estimated run count: ~10 operators x 5 granularities x 3 algorithms x 2 GPU counts x ~3 message sizes = ~900 calendar runs + ~60 baseline runs. With ns-3 per-run time of ~2-10 minutes at 8-16 GPU scale, total wall time ~30-150 hours. Parallelizable across experiment dimensions.
+Estimated run count (GPU=8 revision):  
+`calendar = ((6 deterministic x 5 granularities) + (4 dynamic x 3 granularities)) x 1 algorithm x ~3 message sizes = 126`  
+`baseline = 10 operators x 1 GPU-count x ~3 message sizes = 30`  
+Total `~156` runs.
 
 ### 8.3 Workload Sources
 
