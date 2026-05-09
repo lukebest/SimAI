@@ -1,75 +1,70 @@
-# GPU=8 Calendar Switch Detailed Appendix (Spec Full Sweep)
+# GPU=8 Detailed Report (Forced Single-Switch, No-NVSwitch)
 
 Date: 2026-05-09  
-Source full sweep: `results/calendar_study_spec_full_20260508_rerun`  
-Aggregated JSON: `results/calendar_study_spec_full_20260508_rerun/report.json`  
-Filter: `gpus = 8`  
+Run root: `results/calendar_study_gpu8_no_nvswitch_20260509_rerun2`  
+Aggregated JSON: `results/calendar_study_gpu8_no_nvswitch_20260509_rerun2/report.json`  
 Metric: `p95(calendar) / p95(packet_switch_baseline)`
 
-## 核心回答（按你要的口径）
+## 核心结论
 
-- **各激励下最优调度粒度**：在本次全量重跑的 8-GPU 成功样本里，最优点主要集中在 `chunk` 粒度（个别为 `operator`）。
-- **与基线分组交换比对**：整体仍以接近持平为主；仅 `allgather@32MB` 出现了明确小幅收益（ratio `0.98779`），其余大多在 `1.000x` 附近。
-- **8-GPU 可用样本规模**：`443` 条 matched ratio（calendar 成功且有 baseline）。
+- 这是按要求强制拓扑后的 GPU=8 全量 sweep（`480` 组）：
+  - baseline: `30/30` 成功
+  - calendar: `190` 成功、`260` timeout
+  - 有效 matched ratio: `193`
+- 全局最优比值：`0.971615`（`allgather@1MB`, `phase+bvn`）
+- matched 样本平均比值：`1.087536`
+- 总体上 collectives 接近或小幅优于 baseline；MoE/高冲突激励完成率低且多为劣于 baseline。
 
-## 每个激励（operator × message size）最优配置与基线对比
+## 每个激励（operator × message size）最优点
 
 - `allgather`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`11089/9457`, ratio=`1.172571`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`104119/105406`, ratio=`0.987790`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`789241/789194`, ratio=`1.000060`
+  - `1MB`: `phase+bvn`, `139896/143983`, ratio=`0.971615`
+  - `32MB`: `operator+bvn`, `2468790/2470720`, ratio=`0.999219`
+  - `256MB`: `chunk+bvn`, `19032232/19076666`, ratio=`0.997671`
 - `allreduce_ring`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`9651/9418`, ratio=`1.024740`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`200458/199983`, ratio=`1.002375`
-  - `256MB`: best=`chunk+solstice`, calendar/base=`1571329/1570737`, ratio=`1.000377`
+  - `1MB`: `chunk+bvn`, `155014/154234`, ratio=`1.005057`
+  - `32MB`: `operator+bvn`, `4778558/4778360`, ratio=`1.000041`
 - `allreduce_tree`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`9651/9418`, ratio=`1.024740`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`200458/199983`, ratio=`1.002375`
-  - `256MB`: best=`chunk+solstice`, calendar/base=`1571329/1570737`, ratio=`1.000377`
+  - `1MB`: `chunk+bvn`, `155014/154234`, ratio=`1.005057`
+  - `32MB`: `operator+bvn`, `4778558/4778360`, ratio=`1.000041`
 - `alltoall_ep`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`8075/8075`, ratio=`1.000000`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`102867/102867`, ratio=`1.000000`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`787959/787959`, ratio=`1.000000`
+  - `1MB`: `chunk+round_robin`, `139291/126880`, ratio=`1.097817`
 - `compute_overlap`
-  - `1MB`: best=`operator+bvn`, calendar/base=`11590/10324`, ratio=`1.122627`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`205669/202928`, ratio=`1.013507`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`1574285/1573682`, ratio=`1.000383`
+  - `1MB`: `operator+bvn`, `157840/157836`, ratio=`1.000025`
+  - `32MB`: `operator+bvn`, `4813528/4813528`, ratio=`1.000000`
 - `moe_combine`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`8075/8075`, ratio=`1.000000`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`102867/102867`, ratio=`1.000000`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`787959/787959`, ratio=`1.000000`
+  - `1MB`: `phase+round_robin`, `139403/126744`, ratio=`1.099878`
 - `moe_dispatch`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`8075/8075`, ratio=`1.000000`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`102867/102867`, ratio=`1.000000`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`787959/787959`, ratio=`1.000000`
+  - `1MB`: `operator+round_robin`, `138484/126880`, ratio=`1.091456`
 - `moe_pipeline`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`6545/6545`, ratio=`1.000000`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`101361/101361`, ratio=`1.000000`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`786437/786437`, ratio=`1.000000`
+  - `1MB`: `packet+round_robin`, `95385/90373`, ratio=`1.055459`
+  - `32MB`: `packet+round_robin`, `2403156/2390631`, ratio=`1.005239`
 - `reduce_scatter`
-  - `1MB`: best=`chunk+bvn`, calendar/base=`6789/6448`, ratio=`1.052885`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`102257/101694`, ratio=`1.005536`
-  - `256MB`: best=`operator+bvn`, calendar/base=`787129/787050`, ratio=`1.000100`
+  - `1MB`: `chunk+bvn`, `80758/79978`, ratio=`1.009753`
+  - `32MB`: `operator+bvn`, `2391374/2391358`, ratio=`1.000007`
+  - `256MB`: `operator+bvn`, `19020566/19020566`, ratio=`1.000000`
 - `rs_ag_fused`
-  - `1MB`: best=`operator+bvn`, calendar/base=`7174/6386`, ratio=`1.123395`
-  - `32MB`: best=`chunk+bvn`, calendar/base=`104069/102667`, ratio=`1.013656`
-  - `256MB`: best=`chunk+bvn`, calendar/base=`788505/788023`, ratio=`1.000612`
+  - `1MB`: `operator+bvn`, `82585/82581`, ratio=`1.000048`
+  - `32MB`: `operator+bvn`, `2408615/2408615`, ratio=`1.000000`
+  - `256MB`: `operator+bvn`, `19039739/19039739`, ratio=`1.000000`
 
-## 每类激励的“建议粒度”（基于 8-GPU 三个消息点）
+注：未出现的 `(operator, size)` 组合是该层在 calendar 路径 timeout，未形成 matched 点。
 
-按每个粒度在三个消息点取“最佳算法后再平均 ratio”：
-- `allgather`: 推荐 `chunk`（与 `packet/slot` 同值，优于 `operator/phase`）
-- `allreduce_ring`: 推荐 `chunk`（与 `packet/slot` 同值）
-- `allreduce_tree`: 推荐 `chunk`（与 `packet/slot` 同值）
-- `alltoall_ep`: 五个粒度等价（均 `1.000000`）
-- `compute_overlap`: 推荐 `chunk`（与 `packet/slot` 同值）
-- `moe_dispatch`: 五个粒度等价（均 `1.000000`）
-- `moe_combine`: 五个粒度等价（均 `1.000000`）
-- `moe_pipeline`: 五个粒度等价（均 `1.000000`）
-- `reduce_scatter`: 推荐 `chunk`（与 `packet/slot` 同值）
-- `rs_ag_fused`: 推荐 `operator`（与 `chunk` 差距极小）
+## 按激励完成率（calendar）
 
-## 8-GPU 结论边界
+- `allgather`: `45/45` 成功
+- `allreduce_ring`: `21/45` 成功（timeout `53.3%`）
+- `allreduce_tree`: `21/45` 成功（timeout `53.3%`）
+- `alltoall_ep`: `2/45` 成功（timeout `95.6%`）
+- `compute_overlap`: `24/45` 成功（timeout `46.7%`）
+- `moe_dispatch`: `2/45` 成功（timeout `95.6%`）
+- `moe_combine`: `4/45` 成功（timeout `91.1%`）
+- `moe_pipeline`: `5/45` 成功（timeout `88.9%`）
+- `reduce_scatter`: `33/45` 成功（timeout `26.7%`）
+- `rs_ag_fused`: `33/45` 成功（timeout `26.7%`）
 
-- 本附录只针对 full-sweep 中 **8-GPU 且成功匹配 baseline** 的样本。
-- 结论不能直接外推到 16-GPU；16-GPU 在本轮仍有大量 timeout，需要单独 closure 后再下最终结论。
+## 建议
+
+- Deterministic collectives：优先 `bvn`，粒度以 `operator/chunk/phase` 按消息大小选择。
+- MoE 相关激励：先提升完成率（减少 timeout），再讨论粒度最优。
+- 对外结论建议把“timeout-heavy strata”明确标注为未收敛区域。
