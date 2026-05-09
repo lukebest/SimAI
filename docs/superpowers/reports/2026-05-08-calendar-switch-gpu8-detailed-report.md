@@ -1,81 +1,75 @@
-# GPU=8 Calendar Switch Detailed Report
+# GPU=8 Calendar Switch Detailed Appendix (Spec Full Sweep)
 
-**Date:** 2026-05-08  
-**Primary sweep:** `results/calendar_study_full_20260507_timeout`  
-**Follow-up conflict sweep:** `results/gpu8_conflict_sweep_20260508`  
-**Follow-up summary CSV:** `results/gpu8_conflict_sweep_20260508/summary.csv`  
-**Hotspot trace + switch-type metrics:** `results/debug_nvswitch_metrics/analysis.json`  
-**Filter:** `gpus = 8`  
-**Metric:** `p95(calendar) / p95(packet_switch_baseline)`
+Date: 2026-05-09  
+Source full sweep: `results/calendar_study_spec_full_20260508_rerun`  
+Aggregated JSON: `results/calendar_study_spec_full_20260508_rerun/report.json`  
+Filter: `gpus = 8`  
+Metric: `p95(calendar) / p95(packet_switch_baseline)`
 
-## 核心结论（先答问题）
+## 核心回答（按你要的口径）
 
-- **各激励下最优调度粒度：无唯一最优。** 当前 GPU=8 结果里所有粒度均与 baseline 持平，属于并列最优。
-- **与基线分组交换比对：仍全部持平。** 在补充的“冲突增强 + slot_ns 敏感性”实验中，`48/48` 个 calendar 配置也全部 `ratio=1.000`。
-- **原因定位进展：已确认 schedule 下发链路有效，且非 e2e 指标已能区分 `calendar`/`nvswitch` 路径。** 这解释了早期 `switch_*` 指标接近 0 的观测偏差。
+- **各激励下最优调度粒度**：在本次全量重跑的 8-GPU 成功样本里，最优点主要集中在 `chunk` 粒度（个别为 `operator`）。
+- **与基线分组交换比对**：整体仍以接近持平为主；仅 `allgather@32MB` 出现了明确小幅收益（ratio `0.98779`），其余大多在 `1.000x` 附近。
+- **8-GPU 可用样本规模**：`443` 条 matched ratio（calendar 成功且有 baseline）。
 
-## 原始 GPU=8 全量筛选结果（保持不变）
+## 每个激励（operator × message size）最优配置与基线对比
 
-- 样本：`450`（全部有效）
-- 优于 baseline：`0`
-- 持平 baseline：`450`
-- 劣于 baseline：`0`
+- `allgather`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`11089/9457`, ratio=`1.172571`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`104119/105406`, ratio=`0.987790`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`789241/789194`, ratio=`1.000060`
+- `allreduce_ring`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`9651/9418`, ratio=`1.024740`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`200458/199983`, ratio=`1.002375`
+  - `256MB`: best=`chunk+solstice`, calendar/base=`1571329/1570737`, ratio=`1.000377`
+- `allreduce_tree`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`9651/9418`, ratio=`1.024740`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`200458/199983`, ratio=`1.002375`
+  - `256MB`: best=`chunk+solstice`, calendar/base=`1571329/1570737`, ratio=`1.000377`
+- `alltoall_ep`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`8075/8075`, ratio=`1.000000`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`102867/102867`, ratio=`1.000000`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`787959/787959`, ratio=`1.000000`
+- `compute_overlap`
+  - `1MB`: best=`operator+bvn`, calendar/base=`11590/10324`, ratio=`1.122627`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`205669/202928`, ratio=`1.013507`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`1574285/1573682`, ratio=`1.000383`
+- `moe_combine`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`8075/8075`, ratio=`1.000000`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`102867/102867`, ratio=`1.000000`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`787959/787959`, ratio=`1.000000`
+- `moe_dispatch`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`8075/8075`, ratio=`1.000000`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`102867/102867`, ratio=`1.000000`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`787959/787959`, ratio=`1.000000`
+- `moe_pipeline`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`6545/6545`, ratio=`1.000000`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`101361/101361`, ratio=`1.000000`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`786437/786437`, ratio=`1.000000`
+- `reduce_scatter`
+  - `1MB`: best=`chunk+bvn`, calendar/base=`6789/6448`, ratio=`1.052885`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`102257/101694`, ratio=`1.005536`
+  - `256MB`: best=`operator+bvn`, calendar/base=`787129/787050`, ratio=`1.000100`
+- `rs_ag_fused`
+  - `1MB`: best=`operator+bvn`, calendar/base=`7174/6386`, ratio=`1.123395`
+  - `32MB`: best=`chunk+bvn`, calendar/base=`104069/102667`, ratio=`1.013656`
+  - `256MB`: best=`chunk+bvn`, calendar/base=`788505/788023`, ratio=`1.000612`
 
-## 补充实验：冲突增强与 slot 灵敏度（GPU=8）
+## 每类激励的“建议粒度”（基于 8-GPU 三个消息点）
 
-### 实验设计
+按每个粒度在三个消息点取“最佳算法后再平均 ratio”：
+- `allgather`: 推荐 `chunk`（与 `packet/slot` 同值，优于 `operator/phase`）
+- `allreduce_ring`: 推荐 `chunk`（与 `packet/slot` 同值）
+- `allreduce_tree`: 推荐 `chunk`（与 `packet/slot` 同值）
+- `alltoall_ep`: 五个粒度等价（均 `1.000000`）
+- `compute_overlap`: 推荐 `chunk`（与 `packet/slot` 同值）
+- `moe_dispatch`: 五个粒度等价（均 `1.000000`）
+- `moe_combine`: 五个粒度等价（均 `1.000000`）
+- `moe_pipeline`: 五个粒度等价（均 `1.000000`）
+- `reduce_scatter`: 推荐 `chunk`（与 `packet/slot` 同值）
+- `rs_ag_fused`: 推荐 `operator`（与 `chunk` 差距极小）
 
-- 算法固定：`solstice`
-- 激励：`allgather`、`alltoall_ep`、`moe_dispatch`、`moe_combine`
-- 粒度：`operator`、`phase`、`chunk`、`slot`
-- `slot_ns`：`1000`、`5000`、`20000`
-- 共 `48` 个 calendar 点 + `4` 个 baseline 点
+## 8-GPU 结论边界
 
-### 结果摘要
-
-- `allgather`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
-- `alltoall_ep`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
-- `moe_dispatch`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
-- `moe_combine`：最佳 `ratio=1.000`（所有粒度/slot_ns 均 `1.000`）
-
-## 代码级验证证据
-
-- 已修复首流强制下发表与粒度触发阈值逻辑，避免“从不触发 schedule”。
-- 在 `allgather/phase` 场景中，`calendar_trace.csv` 记录到持续重调度，且 `schedule_entries` 显著大于 1（最高接近 900）。
-- 尽管如此，e2e 仍与 baseline 持平，说明当前 GPU=8 单交换机映射下，calendar gating 对端到端时延尚未形成可观测优势。
-
-## 新增：switch_type 拆分后的非 e2e 证据（关键）
-
-### 改动点
-
-- 指标采集从仅 `CalendarSwitchNode` 扩展到 `CalendarSwitchNode + NVSwitchNode`。
-- `calendar_trace.csv.switch_metrics.csv` 新增 `switch_type` 字段（`calendar` / `nvswitch`）。
-- 队列统计口径从仅 MMU `egress_bytes` 扩展到端口队列字节（覆盖 `q0 + non_q0`）。
-
-### 观测结果（`moe_dispatch`, GPU=8, hotspot trace）
-
-- 对照目录：
-  - `results/debug_nvswitch_metrics/nvls_on`
-  - `results/debug_nvswitch_metrics/nvls_off`
-  - baseline: `results/debug_nvswitch_metrics/baseline`
-- `analysis.json` 观测到：
-  - `calendar_rows = 2016`
-  - `nvswitch_rows = 167`
-  - `switch_allowed = 317723`
-  - `switch_blocked = 0`
-  - `switch_max_q_bytes = 54432`
-- 含义：
-  - 之前 `switch_allowed/switch_blocked/egress_bytes` 接近 0，主要是统计点未覆盖 `nvswitch` 主路径；
-  - 加入 `switch_type` 拆分后，`nvswitch` 路径已有明显非零活动指标；
-  - 但 calendar 对 e2e 的增益在本组实验仍未体现（`ratio = 1.000`）。
-
-## 当前结论的边界
-
-- 本结论是 **GPU=8 + 单交换机 + 当前 SimAI workload 映射 + 当前流量形态** 下的结果。
-- 不应直接外推到更大规模、多跳拓扑或更强热点/突发输入。
-
-## 下一步建议
-
-- 基于 `switch_type` 指标继续放大冲突（更强热点、更高 burst、更多 phase）观察 `switch_block_rate` 是否抬升。
-- 增加 `calendar` 与 `nvswitch` 分别统计的对比图（rows/allowed/queue），用于判定主路径归属与拥塞位置。
-- 在 16 GPU 和多跳路径上复验粒度收益，再更新“最优粒度”结论。
+- 本附录只针对 full-sweep 中 **8-GPU 且成功匹配 baseline** 的样本。
+- 结论不能直接外推到 16-GPU；16-GPU 在本轮仍有大量 timeout，需要单独 closure 后再下最终结论。
