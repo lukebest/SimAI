@@ -120,6 +120,68 @@ def test_run_single_dry_run_skips_existing_simulator(tmp_path):
     assert not (output_dir / "stdout.log").exists()
 
 
+def test_run_calendar_study_gpu8_mixed_dry_run_writes_expected_jobs(tmp_path):
+    """Spec 2026-05-09b: deterministic = RR+BvN+Solstice; dynamic = chunk/packet/slot + RR only."""
+    results_dir = tmp_path / "study_mixed"
+
+    result = run_script(
+        str(RUN_STUDY),
+        "--dry-run",
+        "--parallel",
+        "2",
+        "--matrix",
+        "gpu8_mixed",
+        "--results-dir",
+        str(results_dir),
+    )
+
+    jobs_file = results_dir / "jobs.txt"
+    jobs = jobs_file.read_text(encoding="utf-8").splitlines()
+
+    assert "Total runs: 336" in result.stdout
+    assert len(jobs) == 336
+
+    baseline_jobs = [job for job in jobs if "--mode packet_switch" in job]
+    calendar_jobs = [job for job in jobs if "--mode calendar_switch" in job]
+    assert len(baseline_jobs) == 30
+    assert len(calendar_jobs) == 306
+
+    # Dynamic ops: only round_robin in calendar jobs
+    dyn_any_algo = [
+        j
+        for j in calendar_jobs
+        if "--operator alltoall_ep" in j or "--operator moe_dispatch" in j
+    ]
+    assert dyn_any_algo
+    assert all("--algorithm round_robin" in j for j in dyn_any_algo)
+
+    # Deterministic: includes solstice / bvn on same operator
+    det_sol = [
+        j for j in calendar_jobs if "--operator allgather" in j and "--algorithm solstice" in j
+    ]
+    assert det_sol
+
+
+def test_run_calendar_study_gpu8_mixed_quick_profile_reduces_matrix(tmp_path):
+    results_dir = tmp_path / "study_mixed_quick"
+
+    result = run_script(
+        str(RUN_STUDY),
+        "--dry-run",
+        "--matrix",
+        "gpu8_mixed",
+        "--time-profile",
+        "quick",
+        "--results-dir",
+        str(results_dir),
+    )
+
+    jobs = (results_dir / "jobs.txt").read_text(encoding="utf-8").splitlines()
+    assert "Total runs: 224" in result.stdout
+    assert len(jobs) == 224
+    assert all("--msg-bytes 268435456" not in job for job in jobs)
+
+
 def test_run_calendar_study_dry_run_writes_expected_jobs(tmp_path):
     results_dir = tmp_path / "study"
 
@@ -135,14 +197,14 @@ def test_run_calendar_study_dry_run_writes_expected_jobs(tmp_path):
     jobs_file = results_dir / "jobs.txt"
     jobs = jobs_file.read_text(encoding="utf-8").splitlines()
 
-    assert "Total runs: 864" in result.stdout
-    assert "[DRY-RUN] Would execute 864 runs with parallelism 3" in result.stdout
-    assert len(jobs) == 864
+    assert "Total runs: 960" in result.stdout
+    assert "[DRY-RUN] Would execute 960 runs with parallelism 3" in result.stdout
+    assert len(jobs) == 960
 
     baseline_jobs = [job for job in jobs if "--mode packet_switch" in job]
     calendar_jobs = [job for job in jobs if "--mode calendar_switch" in job]
-    assert len(baseline_jobs) == 54
-    assert len(calendar_jobs) == 810
+    assert len(baseline_jobs) == 60
+    assert len(calendar_jobs) == 900
 
     assert any(
         "--mode packet_switch" in job

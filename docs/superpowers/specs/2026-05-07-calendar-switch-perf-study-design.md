@@ -132,11 +132,12 @@ Defaults preserve baseline behavior (`ENABLE_CALENDAR_SWITCH=0`).
 | `COMPUTE_OVERLAP` | Fused | Yes (compute + comm interleave) | Deterministic |
 | `MOE_PIPELINE` | Fused | Yes (dispatch + compute + combine) | Dynamic (dispatch/combine) |
 
-> **Spec update (2026-05-09):**
+> **Spec update (2026-05-09, revised 2026-05-09b):**
 > - Experiments are constrained to **GPU=8 only**.
 > - For operators marked **Dynamic** in this table, calendar scheduling only evaluates `chunk` / `packet` / `slot` granularities.
 > - `operator` and `phase` granularities are **not evaluated** for Dynamic operators.
-> - Demand-aware scheduling is disabled for this study variant; calendar uses **Round-Robin only**.
+> - **Dynamic** operators: no demand-aware scheduling; calendar uses **Round-Robin only**.
+> - **Deterministic** operators: calendar runs all three algorithms **Round-Robin**, **BvN**, and **Solstice** (demand-aware where the implementation applies).
 
 ## 7. Granularity Semantics Per Operator
 
@@ -181,7 +182,9 @@ Dimensions:
 - Granularity:
   - Deterministic operators: 5 levels (`operator`, `phase`, `chunk`, `packet`, `slot`)
   - Dynamic operators: 3 levels (`chunk`, `packet`, `slot`)
-- Algorithm: 1 (`round_robin`)
+- Algorithm:
+  - Deterministic: 3 (`round_robin`, `bvn`, `solstice`)
+  - Dynamic: 1 (`round_robin` only; no demand-aware)
 - GPU count: 1 (`8`)
 - Message size: from real traces (Llama-70B gradient sizes for collectives, DeepSeek-V3 MoE token distributions)
 - Switch mode: 2 (calendar, packet-switch baseline)
@@ -190,12 +193,13 @@ Pruning rules:
 - Single-phase operators at `phase` granularity collapse to `operator` (report as such, skip separate run).
 - Baseline runs ignore granularity and algorithm (1 run per operator/GPU/size combo).
 - Dynamic operators do not run `operator` or `phase` granularity.
-- Calendar scheduling runs in non-demand-aware mode with `round_robin` only.
+- Dynamic calendar runs use `round_robin` only and do not use demand-aware schedule construction.
+- Deterministic calendar runs use `round_robin`, `bvn`, and `solstice` as specified per run.
 
-Estimated run count (GPU=8 revision):  
-`calendar = ((6 deterministic x 5 granularities) + (4 dynamic x 3 granularities)) x 1 algorithm x ~3 message sizes = 126`  
-`baseline = 10 operators x 1 GPU-count x ~3 message sizes = 30`  
-Total `~156` runs.
+Estimated run count (GPU=8, 3 message sizes):  
+`calendar = (6 deterministic x 5 granularities x 3 algorithms x 3 sizes) + (4 dynamic x 3 granularities x 1 algorithm x 3 sizes) = 270 + 36 = 306`  
+`baseline = 10 operators x 1 GPU-count x 3 message sizes = 30`  
+Total `336` runs.
 
 ### 8.3 Workload Sources
 
