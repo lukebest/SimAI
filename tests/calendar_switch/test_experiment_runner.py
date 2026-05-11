@@ -182,6 +182,42 @@ def test_run_calendar_study_gpu8_mixed_quick_profile_reduces_matrix(tmp_path):
     assert all("--msg-bytes 268435456" not in job for job in jobs)
 
 
+def test_run_calendar_study_gpu8_bvn_prod_quick_profile_matrix(tmp_path):
+    results_dir = tmp_path / "study_bvn_prod_quick"
+
+    result = run_script(
+        str(RUN_STUDY),
+        "--dry-run",
+        "--matrix",
+        "gpu8_bvn_prod",
+        "--time-profile",
+        "quick",
+        "--results-dir",
+        str(results_dir),
+    )
+
+    jobs = (results_dir / "jobs.txt").read_text(encoding="utf-8").splitlines()
+    assert "Total runs: 164" in result.stdout
+    assert len(jobs) == 164
+    assert all("--msg-bytes 268435456" not in job for job in jobs)
+
+    calendar_jobs = [job for job in jobs if "--mode calendar_switch" in job]
+    det_jobs = [
+        job
+        for job in calendar_jobs
+        if "--operator allreduce_ring" in job
+        or "--operator allgather" in job
+        or "--operator reduce_scatter" in job
+        or "--operator allreduce_tree" in job
+        or "--operator rs_ag_fused" in job
+        or "--operator compute_overlap" in job
+    ]
+    assert det_jobs
+    assert all("--algorithm solstice" not in job for job in det_jobs)
+    assert any("--algorithm bvn" in job for job in det_jobs)
+    assert any("--algorithm round_robin" in job for job in det_jobs)
+
+
 def test_run_calendar_study_dry_run_writes_expected_jobs(tmp_path):
     results_dir = tmp_path / "study"
 

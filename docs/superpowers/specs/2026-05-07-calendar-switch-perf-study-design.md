@@ -196,10 +196,21 @@ Pruning rules:
 - Dynamic calendar runs use `round_robin` only and do not use demand-aware schedule construction.
 - Deterministic calendar runs use `round_robin`, `bvn`, and `solstice` as specified per run.
 
+Production-readout rule (static policy):
+- For deterministic operators, primary conclusion is taken from `bvn`.
+- `round_robin` is retained as control-only evidence and is not used as the production candidate.
+- An execution-friendly matrix profile (`gpu8_bvn_prod`) may be used to run deterministic `bvn + round_robin(control)` only.
+
 Estimated run count (GPU=8, 3 message sizes):  
 `calendar = (6 deterministic x 5 granularities x 3 algorithms x 3 sizes) + (4 dynamic x 3 granularities x 1 algorithm x 3 sizes) = 270 + 36 = 306`  
 `baseline = 10 operators x 1 GPU-count x 3 message sizes = 30`  
 Total `336` runs.
+
+Estimated run count for `gpu8_bvn_prod` profile (GPU=8):
+`calendar = (6 deterministic x 5 granularities x 2 algorithms x 3 sizes) + (4 dynamic x 3 granularities x 1 algorithm x 3 sizes) = 180 + 36 = 216`  
+`baseline = 10 operators x 1 GPU-count x 3 message sizes = 30`  
+Total `246` runs.  
+(`quick` time-profile with 1MB/32MB only: total `164` runs.)
 
 ### 8.3 Workload Sources
 

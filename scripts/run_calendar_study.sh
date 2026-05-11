@@ -10,7 +10,9 @@ SIM_TIMEOUT_SECONDS="${SIM_TIMEOUT_SECONDS:-180}"
 SIM_TIMEOUT_EXPLICIT=false
 # full: GPU 8+16, all operators, all granularities, all algorithms (default).
 # gpu8_mixed: spec 2026-05-09b — GPU=8 only; deterministic ops run RR+BvN+Solstice;
-#              dynamic ops run chunk/packet/slot + round_robin only (no demand-aware sweep).
+#             dynamic ops run chunk/packet/slot + round_robin only (no demand-aware sweep).
+# gpu8_bvn_prod: GPU=8 production-readout matrix; deterministic ops run BvN + RR-control only;
+#                dynamic ops run chunk/packet/slot + round_robin only.
 MATRIX="full"
 TIME_PROFILE="full"
 TOPOLOGY_8_PACKET=""
@@ -25,7 +27,7 @@ Usage: $0 [options]
   --dry-run
   --results-dir DIR
   --sim-timeout-seconds N
-  --matrix full|gpu8_mixed
+  --matrix full|gpu8_mixed|gpu8_bvn_prod
   --time-profile full|quick
   --topology-8-packet PATH
   --topology-8-calendar PATH
@@ -65,8 +67,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${MATRIX}" in
-    full|gpu8_mixed) ;;
-    *) die "--matrix must be full or gpu8_mixed" ;;
+    full|gpu8_mixed|gpu8_bvn_prod) ;;
+    *) die "--matrix must be full, gpu8_mixed, or gpu8_bvn_prod" ;;
 esac
 
 case "${TIME_PROFILE}" in
@@ -110,10 +112,11 @@ DYNAMIC_OPS=(
 GRANULARITIES=("operator" "phase" "chunk" "packet" "slot")
 DYNAMIC_GRANULARITIES=("chunk" "packet" "slot")
 ALGORITHMS=("solstice" "bvn" "round_robin")
+DETERMINISTIC_PROD_ALGOS=("bvn" "round_robin")
 GPU_COUNTS=(8 16)
 MSG_SIZES=(1048576 33554432 268435456)
 
-if [[ "${MATRIX}" == "gpu8_mixed" ]]; then
+if [[ "${MATRIX}" == "gpu8_mixed" || "${MATRIX}" == "gpu8_bvn_prod" ]]; then
     GPU_COUNTS=(8)
 fi
 if [[ "${TIME_PROFILE}" == "quick" ]]; then
@@ -225,11 +228,39 @@ if [[ "${MATRIX}" == "full" ]]; then
             done
         done
     done
-else
+elif [[ "${MATRIX}" == "gpu8_mixed" ]]; then
     # gpu8_mixed: deterministic — all granularities × all algorithms; dynamic — 3 grans × RR only
     for op in "${DETERMINISTIC_OPS[@]}"; do
         for gran in "${GRANULARITIES[@]}"; do
             for algo in "${ALGORITHMS[@]}"; do
+                for gpus in "${GPU_COUNTS[@]}"; do
+                    for size in "${MSG_SIZES[@]}"; do
+                        RUN_IDX=$((RUN_IDX + 1))
+                        out="${RESULTS_DIR}/calendar/${op}_${gran}_${algo}_g${gpus}_s${size}"
+                        topo="$(resolve_topology "${gpus}" "calendar_switch")"
+                        append_job "calendar_switch" "${gran}" "${algo}" "${gpus}" "${op}" "${size}" "${out}" "${topo}"
+                    done
+                done
+            done
+        done
+    done
+    for op in "${DYNAMIC_OPS[@]}"; do
+        for gran in "${DYNAMIC_GRANULARITIES[@]}"; do
+            for gpus in "${GPU_COUNTS[@]}"; do
+                for size in "${MSG_SIZES[@]}"; do
+                    RUN_IDX=$((RUN_IDX + 1))
+                    out="${RESULTS_DIR}/calendar/${op}_${gran}_round_robin_g${gpus}_s${size}"
+                    topo="$(resolve_topology "${gpus}" "calendar_switch")"
+                    append_job "calendar_switch" "${gran}" "round_robin" "${gpus}" "${op}" "${size}" "${out}" "${topo}"
+                done
+            done
+        done
+    done
+else
+    # gpu8_bvn_prod: deterministic — BvN + RR-control; dynamic — 3 grans × RR only
+    for op in "${DETERMINISTIC_OPS[@]}"; do
+        for gran in "${GRANULARITIES[@]}"; do
+            for algo in "${DETERMINISTIC_PROD_ALGOS[@]}"; do
                 for gpus in "${GPU_COUNTS[@]}"; do
                     for size in "${MSG_SIZES[@]}"; do
                         RUN_IDX=$((RUN_IDX + 1))
