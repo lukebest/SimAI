@@ -1,62 +1,63 @@
-# GPU=8 Detailed Report (Mixed Algorithms, Quick Profile)
+# GPU=8 Detailed Report (BvN Production, Quick, 400Gbps)
 
-Date: 2026-05-09  
-Run root: `results/calendar_study_gpu8_mixed_quick_20260509`  
-Aggregated JSON: `results/calendar_study_gpu8_mixed_quick_20260509/report.json`  
+Date: 2026-05-11  
+Run root: `results/calendar_study_gpu8_bvn_prod_quick_400g_20260511`  
+Aggregated JSON: `results/calendar_study_gpu8_bvn_prod_quick_400g_20260511/report.json`  
 Metric: `p95(calendar) / p95(packet_switch_baseline)`
 
 ## 核心结论
 
-- 本轮按修改后的 spec + quick profile 扫描（仅 `1MB` 和 `32MB`，总计 `224` 组）：
+- 本轮按 production-readout 规则扫描（`1MB` + `32MB`，`164` 组）：
   - baseline: `20`
-  - calendar: `204`
-  - matched ratio: `150`
-  - skipped (empty E2E): `54`
-- 全局最优比值：`0.971615`（`allgather@1MB`, `phase+bvn`）
-- matched 样本平均比值：`1.106545`
-- 相比上一轮 RR-only 结果，本轮在 deterministic 上明显改善：多个算子在 `32MB` 已接近 baseline（ratio 约 `1.0`）。
+  - calendar: `144`
+  - matched ratio: `80`
+  - skipped (empty E2E): `64`
+- 全局最优比值：`0.962122`（`allgather@32MB`, `chunk+bvn`）
+- matched 样本平均比值：`1.234820`
+- deterministic 算法对比（matched）：
+  - `bvn`: `60` 样本，均值 `1.003472`
+  - `round_robin`（control）: `20` 样本，均值 `1.928863`
 
 ## 每个算子最优点（1MB/32MB）
 
 - `allgather`
-  - `1MB`: `phase+bvn`, `139896/143983`, ratio=`0.971615`
-  - `32MB`: `phase+bvn`, `2468790/2470720`, ratio=`0.999219`
+  - `32MB`: `chunk+bvn`, `660689/686700`, ratio=`0.962122`
 - `allreduce_ring`
-  - `32MB`: `operator+bvn`, `4778558/4778360`, ratio=`1.000041`
+  - `1MB`: `operator+bvn`, `48523/50309`, ratio=`0.964499`
 - `allreduce_tree`
-  - `32MB`: `operator+bvn`, `4778558/4778360`, ratio=`1.000041`
+  - `1MB`: `operator+bvn`, `48523/50309`, ratio=`0.964499`
 - `compute_overlap`
-  - `32MB`: `operator+bvn`, `4813528/4813528`, ratio=`1.000000`
+  - `1MB`: `operator+bvn`, ratio=`0.983355`
 - `reduce_scatter`
-  - `32MB`: `operator+bvn`, `2391374/2391358`, ratio=`1.000007`
+  - `1MB`: `operator+bvn`, `27640/28526`, ratio=`0.968941`
 - `rs_ag_fused`
-  - `32MB`: `operator+bvn`, `2408615/2408615`, ratio=`1.000000`
-- `alltoall_ep`
-  - `1MB`: `chunk+round_robin`, `138801/126880`, ratio=`1.093955`
-- `moe_dispatch`
-  - `1MB`: `packet+round_robin`, `138019/126880`, ratio=`1.087792`
-- `moe_combine`
-  - `1MB`: `chunk+round_robin`, `139541/126880`, ratio=`1.099787`
-- `moe_pipeline`
-  - `1MB`: `packet+round_robin`, `96854/90373`, ratio=`1.071714`
+  - `32MB`: `chunk+bvn`, `612757/616645`, ratio=`0.993695`
+
+动态算子（`alltoall_ep`, `moe_dispatch`, `moe_combine`, `moe_pipeline`）本轮无 matched 点。
+
+## allreduce_ring 专项结论
+
+- `bvn`：`10/10` matched（两种 size × 五种 granularity）
+- `round_robin`：`0/10` matched（全部 empty E2E）
+- 结论：在 400Gbps + static policy 下，`allreduce_ring` 的生产候选应固定为 `bvn`，RR 仅用于对照。
 
 ## 按算子完成率（calendar）
 
-（说明：这里使用 matched/total，未匹配部分主要是 empty E2E）
+（说明：使用 matched/total，未匹配部分主要是 empty E2E）
 
-- `allgather`: `30/30`（skipped `0`）
-- `allreduce_ring`: `22/30`（skipped `8`）
-- `allreduce_tree`: `21/30`（skipped `9`）
-- `alltoall_ep`: `2/6`（skipped `4`）
-- `compute_overlap`: `24/30`（skipped `6`）
-- `moe_dispatch`: `2/6`（skipped `4`）
-- `moe_combine`: `1/6`（skipped `5`）
-- `moe_pipeline`: `2/6`（skipped `4`）
-- `reduce_scatter`: `22/30`（skipped `8`）
-- `rs_ag_fused`: `24/30`（skipped `6`）
+- `allgather`: `20/20`（skipped `0`）
+- `allreduce_ring`: `10/20`（skipped `10`）
+- `allreduce_tree`: `10/20`（skipped `10`）
+- `alltoall_ep`: `0/6`（skipped `6`）
+- `compute_overlap`: `15/20`（skipped `5`）
+- `moe_dispatch`: `0/6`（skipped `6`）
+- `moe_combine`: `0/6`（skipped `6`）
+- `moe_pipeline`: `0/6`（skipped `6`）
+- `reduce_scatter`: `10/20`（skipped `10`）
+- `rs_ag_fused`: `15/20`（skipped `5`）
 
 ## 建议
 
-- 当前 quick 结果支持“deterministic 优先 BvN”的结论：在 `32MB` 大多可达近 baseline。
-- dynamic 仍是主瓶颈：优先解决 empty-E2E 问题，再谈粒度/算法微调。
-- 若需要对外给出完整结论，建议下一步只对筛选后的少量候选补跑 `256MB`，而不是恢复全矩阵。
+- deterministic 正式结论以 `bvn` 为主，`round_robin` 只保留 control 角色。
+- dynamic 仍是主瓶颈：优先做 empty-E2E 收敛，再开展算法优劣结论。
+- 若要补全最终报告，建议只在已收敛候选上补跑 `256MB`，避免恢复全矩阵高成本扫描。
