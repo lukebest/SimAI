@@ -1,9 +1,9 @@
 # Calendar Switch Full Sweep Report (GPU=8 BvN-Production, Quick, 400Gbps)
 
-Date: 2026-05-11  
+Date: 2026-05-11 (post-fix rerun)  
 Spec (revised): `docs/superpowers/specs/2026-05-07-calendar-switch-perf-study-design.md`  
-Raw run root: `results/calendar_study_gpu8_bvn_prod_quick_400g_20260511`  
-Raw aggregated JSON: `results/calendar_study_gpu8_bvn_prod_quick_400g_20260511/report.json`
+Raw run root: `results/calendar_study_gpu8_bvn_prod_quick_400g_fix_20260511`  
+Raw aggregated JSON: `results/calendar_study_gpu8_bvn_prod_quick_400g_fix_20260511/report.json`
 
 ## 1) Scope and Setup
 
@@ -32,17 +32,18 @@ Run coverage:
 
 Executive metrics:
 - Best p95 ratio: `0.962122`
-- Mean p95 ratio (matched runs): `1.234820`
+- Mean p95 ratio (matched runs): `1.228636`
 - Missing baseline matches: `0`
 
 Deterministic algorithm comparison (matched samples):
-- `bvn`: `60` samples, mean ratio `1.003472`
-- `round_robin` (control): `20` samples, mean ratio `1.928863`
+- `bvn`: `60` samples, mean ratio `1.000234`
+- `round_robin` (control): `20` samples, mean ratio `1.913842`
 
 ## 3) Best Observed Configurations (Per Operator)
 
 Best p95-ratio points per operator (matched runs):
-- `allgather`: `chunk + bvn`, `32MB`, ratio `0.962122` (`660689 / 686700`)
+- `allgather`: `chunk + bvn`, `32MB`, ratio `0.962122` (`660689 / 686700`)  
+  (post-fix validation shows `operator + bvn` reaches the same ratio/E2E for `1MB` and `32MB`)
 - `allreduce_ring`: `operator + bvn`, `1MB`, ratio `0.964499` (`48523 / 50309`)
 - `allreduce_tree`: `operator + bvn`, `1MB`, ratio `0.964499` (`48523 / 50309`)
 - `compute_overlap`: `operator + bvn`, `1MB`, ratio `0.983355`

@@ -138,6 +138,7 @@ Defaults preserve baseline behavior (`ENABLE_CALENDAR_SWITCH=0`).
 > - `operator` and `phase` granularities are **not evaluated** for Dynamic operators.
 > - **Dynamic** operators: no demand-aware scheduling; calendar uses **Round-Robin only**.
 > - **Deterministic** operators: calendar runs all three algorithms **Round-Robin**, **BvN**, and **Solstice** (demand-aware where the implementation applies).
+> - **Post-fix rerun (2026-05-11):** for `allgather` under `static_operator + allgather_ring`, install static schedule on first flow to remove startup bias between `operator` and `chunk`.
 
 ## 7. Granularity Semantics Per Operator
 
@@ -169,7 +170,7 @@ Defaults preserve baseline behavior (`ENABLE_CALENDAR_SWITCH=0`).
 
 For all A/B comparisons (calendar vs baseline):
 - Topology: single switch, N fully-connected ports
-- Link bandwidth: 100 Gbps
+- Link bandwidth: 100 Gbps (default study) or 400 Gbps (production rerun profile)
 - Link latency: 1 us
 - Packet payload: 1000 bytes
 - ECN/PFC settings: match SimAI defaults
@@ -212,7 +213,14 @@ Estimated run count for `gpu8_bvn_prod` profile (GPU=8):
 Total `246` runs.  
 (`quick` time-profile with 1MB/32MB only: total `164` runs.)
 
-### 8.3 Workload Sources
+### 8.3.1 Experiment Log (Recent)
+
+- **2026-05-11 / Production rerun:** `results/calendar_study_gpu8_bvn_prod_quick_400g_fix_20260511/report.json`
+  - Matrix: `gpu8_bvn_prod + quick` (1MB/32MB), topology bandwidth 400Gbps
+  - Deterministic readout: `bvn` as production candidate, `round_robin` as control-only
+  - Post-fix validation: `allgather` `operator` and `chunk` reach parity after first-flow static schedule installation
+
+### 8.4 Workload Sources
 
 - **Collective operators**: Use AICB (`aicb/workload_generator/SimAI_training_workload_generator.py`) to extract gradient sizes from Llama-70B model config. The allreduce message size for gradient synchronization in Llama-70B with TP=8 is approximately 32MB for the largest layers.
 - **MoE operators**: Use DeepSeek-V3 style config (256 experts, top-k=6, shared experts). Token-to-expert distributions: uniform (baseline), zipf (skewed), and empirically measured from DeepSeek-V3 traces if available.

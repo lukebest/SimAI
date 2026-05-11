@@ -1,8 +1,8 @@
-# GPU=8 Detailed Report (BvN Production, Quick, 400Gbps)
+# GPU=8 Detailed Report (BvN Production, Quick, 400Gbps, Post-Fix)
 
 Date: 2026-05-11  
-Run root: `results/calendar_study_gpu8_bvn_prod_quick_400g_20260511`  
-Aggregated JSON: `results/calendar_study_gpu8_bvn_prod_quick_400g_20260511/report.json`  
+Run root: `results/calendar_study_gpu8_bvn_prod_quick_400g_fix_20260511`  
+Aggregated JSON: `results/calendar_study_gpu8_bvn_prod_quick_400g_fix_20260511/report.json`  
 Metric: `p95(calendar) / p95(packet_switch_baseline)`
 
 ## 核心结论
@@ -13,15 +13,16 @@ Metric: `p95(calendar) / p95(packet_switch_baseline)`
   - matched ratio: `80`
   - skipped (empty E2E): `64`
 - 全局最优比值：`0.962122`（`allgather@32MB`, `chunk+bvn`）
-- matched 样本平均比值：`1.234820`
+- matched 样本平均比值：`1.228636`
 - deterministic 算法对比（matched）：
-  - `bvn`: `60` 样本，均值 `1.003472`
-  - `round_robin`（control）: `20` 样本，均值 `1.928863`
+  - `bvn`: `60` 样本，均值 `1.000234`
+  - `round_robin`（control）: `20` 样本，均值 `1.913842`
 
 ## 每个算子最优点（1MB/32MB）
 
 - `allgather`
   - `32MB`: `chunk+bvn`, `660689/686700`, ratio=`0.962122`
+  - 修复后对照：`operator+bvn` 在 `1MB` 和 `32MB` 与 `chunk+bvn` 完全一致（startup 偏置已消除）
 - `allreduce_ring`
   - `1MB`: `operator+bvn`, `48523/50309`, ratio=`0.964499`
 - `allreduce_tree`
@@ -59,5 +60,6 @@ Metric: `p95(calendar) / p95(packet_switch_baseline)`
 ## 建议
 
 - deterministic 正式结论以 `bvn` 为主，`round_robin` 只保留 control 角色。
+- allgather 的 granularity 选择不再受“首次静态表装载时机”偏置影响，operator/chunk 均可。
 - dynamic 仍是主瓶颈：优先做 empty-E2E 收敛，再开展算法优劣结论。
 - 若要补全最终报告，建议只在已收敛候选上补跑 `256MB`，避免恢复全矩阵高成本扫描。

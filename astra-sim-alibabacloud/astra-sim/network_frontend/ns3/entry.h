@@ -651,7 +651,13 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
       if (!g_static_operator_schedule_loaded) {
         g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
                                               request->flowTag);
-        should_reschedule = g_granularity_controller->ShouldReschedule(request->flowTag);
+        if (GetCalendarStaticPattern() == "allgather_ring") {
+          // For allgather static-ring mode, install the static calendar
+          // immediately to avoid startup burst before slot-gating becomes active.
+          should_reschedule = true;
+        } else {
+          should_reschedule = g_granularity_controller->ShouldReschedule(request->flowTag);
+        }
       }
     } else {  // STATIC_PHASE
       g_granularity_controller->OnFlowStart(src, dst, real_PacketCount,
