@@ -17,25 +17,25 @@ This run follows the production-readout policy under quick profile:
 - Dynamic operator message size is reduced to `128KB` (`131072`) for timeout-closure lane
 - Message sizes limited to `1MB` and `32MB` (`time-profile=quick`)
 
-Scan matrix (rerun):
-- baseline: `10 operators x 2 sizes = 20`
+Scan matrix (rerun + dynamic baseline closure):
+- baseline: `20 + dynamic-128KB(4) = 24`
 - calendar deterministic: `6 x 5 granularities x 2 algorithms x 2 sizes = 120`
 - calendar dynamic: `4 x 3 granularities x 1 algorithm x 1 size(128KB) = 12`
-- total: `152`
+- total: `156`
 
 ## 2) Coverage and Completion
 
 Run coverage:
-- Total runs: `152`
-- Baseline runs: `20`
+- Total runs: `156`
+- Baseline runs: `24`
 - Calendar runs: `132`
-- Matched calendar-vs-baseline ratios: `80`
+- Matched calendar-vs-baseline ratios: `92`
 - Skipped calendar runs due to empty E2E: `40`
 
 Executive metrics:
 - Best p95 ratio: `0.962122`
-- Mean p95 ratio (matched runs): `1.229878`
-- Missing baseline matches: `12` (all from dynamic `128KB` runs without baseline counterpart)
+- Mean p95 ratio (matched runs): `1.375195`
+- Missing baseline matches: `0`
 
 Deterministic algorithm comparison (matched samples):
 - `bvn`: `60` samples, mean ratio `1.000234`
@@ -51,17 +51,15 @@ Best p95-ratio points per operator (matched runs):
 - `compute_overlap`: `operator + bvn`, `1MB`, ratio `0.983355`
 - `reduce_scatter`: `operator + bvn`, `1MB`, ratio `0.968941`
 - `rs_ag_fused`: `chunk + bvn`, `32MB`, ratio `0.993695`
-
-No matched ratio points in this run for:
-- `alltoall_ep`
-- `moe_dispatch`
-- `moe_combine`
-- `moe_pipeline`
+- `alltoall_ep`: `chunk + round_robin`, `128KB`, ratio `2.551855` (`55314 / 21676`)
+- `moe_dispatch`: `packet + round_robin`, `128KB`, ratio `2.557297` (`55322 / 21633`)
+- `moe_combine`: `chunk + round_robin`, `128KB`, ratio `2.563485` (`55320 / 21580`)
+- `moe_pipeline`: `packet + round_robin`, `128KB`, ratio `1.702739` (`17780 / 10442`)
 
 Interpretation:
 - Deterministic operators are consistently improved/near parity when read out with `bvn`.
 - RR remains useful as control evidence, but its quality is clearly below `bvn`.
-- Dynamic operators now complete (no empty-E2E) under static-RR closure settings, but baseline ratio is unavailable because dynamic lane uses `128KB` only.
+- Dynamic operators now complete and ratio is closed at `128KB`, but all observed ratios are above baseline (current dynamic lane remains slower than packet-switch).
 
 ## 4) Empty-E2E Pattern (Calendar, GPU=8)
 
@@ -82,12 +80,12 @@ Calendar run completeness by operator (`matched / total`, skipped = empty E2E):
 Given this production-readout matrix:
 - **Deterministic operators:** use `bvn` as production candidate; it is strongly better than RR-control in matched evidence.
 - **RR policy:** keep as regression/control lane only, not as main conclusion source.
-- **Dynamic operators:** empty-E2E issue is closed under static-RR `128KB` lane; add same-size baselines before making ratio-based conclusions.
+- **Dynamic operators:** empty-E2E issue and baseline matching are both closed under static-RR `128KB` lane, but performance is still behind baseline (needs dedicated optimization).
 
 ## 6) Next Actions
 
 - Keep `gpu8_bvn_prod` as deterministic production evaluation matrix.
 - Keep dynamic closure lane at `RR + static_operator + 128KB` to maintain completion.
-- Add baseline `128KB` runs for dynamic operators, then re-enable ratio-based comparison.
-- After ratio closure, run targeted larger-size revalidation on shortlisted dynamic candidates.
+- Start dynamic improvement loop from this stable lane (optimize slot/frame/replay policy against `128KB` baseline).
+- After dynamic ratio improves, run targeted larger-size revalidation on shortlisted candidates.
 

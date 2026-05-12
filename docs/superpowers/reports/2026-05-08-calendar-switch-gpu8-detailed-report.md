@@ -7,18 +7,18 @@ Metric: `p95(calendar) / p95(packet_switch_baseline)`
 
 ## 核心结论
 
-- 本轮按 production-readout + dynamic-timeout-fix 规则扫描（总计 `152` 组）：
-  - baseline: `20`
+- 本轮按 production-readout + dynamic-timeout-fix 规则扫描（总计 `156` 组）：
+  - baseline: `24`（额外补齐 dynamic `128KB` baseline）
   - calendar: `132`
-  - matched ratio: `80`
+  - matched ratio: `92`
   - skipped (empty E2E): `40`
 - dynamic lane 采用：`RR + static_operator + 128KB + uniform gate-trace`（关闭动态重调度）
 - 全局最优比值：`0.962122`（`allgather@32MB`, `chunk+bvn`）
-- matched 样本平均比值：`1.229878`
+- matched 样本平均比值：`1.375195`
 - deterministic 算法对比（matched）：
   - `bvn`: `60` 样本，均值 `1.000234`
   - `round_robin`（control）: `20` 样本，均值 `1.918810`
-- `missing_baselines = 12`：来自 dynamic `128KB` 样本在 baseline 侧暂无对应 size
+- `missing_baselines = 0`：dynamic `128KB` baseline 已补齐，ratio 闭环完成
 
 ## 每个算子最优点（1MB/32MB）
 
@@ -36,7 +36,11 @@ Metric: `p95(calendar) / p95(packet_switch_baseline)`
 - `rs_ag_fused`
   - `32MB`: `chunk+bvn`, `612757/616645`, ratio=`0.993695`
 
-动态算子（`alltoall_ep`, `moe_dispatch`, `moe_combine`, `moe_pipeline`）本轮依旧无 matched ratio 点，但 empty-E2E 已消除（见完成率）。
+动态算子（`alltoall_ep`, `moe_dispatch`, `moe_combine`, `moe_pipeline`）本轮 ratio 已闭环（均为 `128KB`）：
+- `alltoall_ep` best: `chunk+RR`, ratio=`2.551855`
+- `moe_dispatch` best: `packet+RR`, ratio=`2.557297`
+- `moe_combine` best: `chunk+RR`, ratio=`2.563485`
+- `moe_pipeline` best: `packet+RR`, ratio=`1.702739`
 
 ## allreduce_ring 专项结论
 
@@ -63,5 +67,5 @@ Metric: `p95(calendar) / p95(packet_switch_baseline)`
 
 - deterministic 正式结论以 `bvn` 为主，`round_robin` 只保留 control 角色。
 - allgather 的 granularity 选择不再受“首次静态表装载时机”偏置影响，operator/chunk 均可。
-- dynamic 的 empty-E2E 已通过 static-RR 方案收敛；下一步先补 baseline `128KB`，再做 ratio 对比。
-- 若要补全最终报告，建议先完成 dynamic ratio 闭环，再针对入围点补跑大消息量验证。
+- dynamic 的 empty-E2E 和 ratio 闭环已完成；当前主要问题从“跑不完”转为“跑得慢”。
+- 下一步建议围绕 `RR + static_operator + 128KB` 稳态配置做动态算子优化，再针对改善点补跑更大消息量验证。
