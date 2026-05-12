@@ -34,7 +34,7 @@ Usage: $0 [options]
   --dry-run
   --mode packet_switch|calendar_switch
   --granularity operator|phase|chunk|packet|slot
-  --algorithm solstice|bvn|round_robin
+  --algorithm solstice|bvn|round_robin|islip
   --gpus N
   --operator OP
   --msg-bytes BYTES
@@ -107,8 +107,8 @@ case "${GRANULARITY}" in
 esac
 
 case "${ALGORITHM}" in
-    solstice|bvn|round_robin) ;;
-    *) die "--algorithm must be solstice, bvn, or round_robin" ;;
+    solstice|bvn|round_robin|islip) ;;
+    *) die "--algorithm must be solstice, bvn, round_robin, or islip" ;;
 esac
 
 case "${MOE_GATE_TRACE_MODE}" in

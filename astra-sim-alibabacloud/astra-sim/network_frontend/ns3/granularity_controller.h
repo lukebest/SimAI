@@ -376,6 +376,142 @@ inline CalendarSchedule BuildBvnSchedule(const DemandMatrix& demand,
   return schedule;
 }
 
+// Iterative iSLIP maximal matching for VOQs with positive residual demand.
+// Pointers grant_ptr[j] / accept_ptr[i] carry across calls for fairness (IEEE-style iSLIP).
+inline std::vector<uint32_t> BuildIslipActiveMatching(
+    const DemandMatrix& residual, uint32_t fallback_slot,
+    std::vector<std::pair<uint32_t, uint32_t>>* matches,
+    std::vector<uint32_t>* grant_ptr, std::vector<uint32_t>* accept_ptr) {
+  const uint32_t radix = static_cast<uint32_t>(residual.size());
+  std::vector<uint32_t> permutation =
+      BuildRoundRobinPermutation(radix, fallback_slot);
+  if (matches != nullptr) {
+    matches->clear();
+  }
+  if (grant_ptr == nullptr || accept_ptr == nullptr) {
+    return permutation;
+  }
+  if (grant_ptr->size() != radix) {
+    grant_ptr->assign(radix, 0);
+  }
+  if (accept_ptr->size() != radix) {
+    accept_ptr->assign(radix, 0);
+  }
+
+  constexpr double kEps = 1e-12;
+  std::vector<bool> matched_in(radix, false);
+  std::vector<bool> matched_out(radix, false);
+
+  for (;;) {
+    std::vector<int> grant_to_input(static_cast<size_t>(radix), -1);
+    for (uint32_t j = 0; j < radix; ++j) {
+      if (matched_out[j]) {
+        continue;
+      }
+      for (uint32_t k = 0; k < radix; ++k) {
+        const uint32_t i = ((*grant_ptr)[j] + k) % radix;
+        if (i == j || matched_in[i]) {
+          continue;
+        }
+        if (residual[i][j] > kEps) {
+          grant_to_input[j] = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+
+    std::vector<int> accept_to_output(static_cast<size_t>(radix), -1);
+    for (uint32_t i = 0; i < radix; ++i) {
+      if (matched_in[i]) {
+        continue;
+      }
+      for (uint32_t k = 0; k < radix; ++k) {
+        const uint32_t j = ((*accept_ptr)[i] + k) % radix;
+        if (i == j || matched_out[j]) {
+          continue;
+        }
+        if (grant_to_input[j] == static_cast<int>(i)) {
+          accept_to_output[i] = static_cast<int>(j);
+          break;
+        }
+      }
+    }
+
+    bool progressed = false;
+    for (uint32_t i = 0; i < radix; ++i) {
+      if (accept_to_output[i] < 0) {
+        continue;
+      }
+      const uint32_t j = static_cast<uint32_t>(accept_to_output[i]);
+      matched_in[i] = true;
+      matched_out[j] = true;
+      (*grant_ptr)[j] = (i + 1U) % radix;
+      (*accept_ptr)[i] = (j + 1U) % radix;
+      permutation[i] = j;
+      if (matches != nullptr) {
+        matches->push_back(std::make_pair(i, j));
+      }
+      progressed = true;
+    }
+    if (!progressed) {
+      break;
+    }
+  }
+
+  return permutation;
+}
+
+inline CalendarSchedule BuildIslipSchedule(const DemandMatrix& demand,
+                                           uint32_t frame_slots) {
+  CalendarSchedule schedule;
+  const uint32_t radix = static_cast<uint32_t>(demand.size());
+  DemandMatrix residual = BuildSquareResidual(demand, radix);
+  // No Sinkhorn: iSLIP uses VOQ occupancy directly (binary request if > 0).
+
+  std::vector<uint32_t> grant_ptr(radix, 0);
+  std::vector<uint32_t> accept_ptr(radix, 0);
+
+  uint32_t emittedSlots = 0;
+  while (emittedSlots < frame_slots && HasPositiveDemand(residual)) {
+    std::vector<std::pair<uint32_t, uint32_t>> matches;
+    std::vector<uint32_t> permutation = BuildIslipActiveMatching(
+        residual, emittedSlots, &matches, &grant_ptr, &accept_ptr);
+    if (matches.empty()) {
+      break;
+    }
+
+    double minResidual = std::numeric_limits<double>::max();
+    for (const auto& match : matches) {
+      minResidual =
+          std::min(minResidual, residual[match.first][match.second]);
+    }
+    const uint32_t slots =
+        AllocateSlotsFromWeight(minResidual * static_cast<double>(frame_slots),
+                                frame_slots - emittedSlots);
+    if (slots == 0) {
+      break;
+    }
+    for (uint32_t slot = 0; slot < slots; ++slot) {
+      AppendScheduleEntry(&schedule, permutation);
+    }
+    emittedSlots += slots;
+
+    const double consumed = static_cast<double>(slots) /
+                            static_cast<double>(frame_slots);
+    for (const auto& match : matches) {
+      double& value = residual[match.first][match.second];
+      value = std::max(0.0, value - consumed);
+    }
+  }
+
+  while (emittedSlots < frame_slots) {
+    AppendScheduleEntry(&schedule,
+                        BuildRoundRobinPermutation(radix, emittedSlots));
+    emittedSlots++;
+  }
+  return schedule;
+}
+
 inline CalendarSchedule BuildCalendarSchedule(const DemandMatrix& demand,
                                               std::string algorithm,
                                               uint32_t frame_slots) {
@@ -396,6 +532,9 @@ inline CalendarSchedule BuildCalendarSchedule(const DemandMatrix& demand,
 
   if (algorithm == "bvn") {
     return BuildBvnSchedule(demand, frame_slots);
+  }
+  if (algorithm == "islip") {
+    return BuildIslipSchedule(demand, frame_slots);
   }
   if (algorithm == "solstice") {
     return BuildSolsticeSchedule(demand, frame_slots);
