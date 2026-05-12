@@ -215,6 +215,11 @@ Total `246` runs.
 
 ### 8.3.1 Experiment Log (Recent)
 
+- **2026-05-12 / Dynamic-timeout-fix rerun:** `results/calendar_study_gpu8_bvn_prod_quick_400g_dynamicfix_20260512/report.json`
+  - Matrix: `gpu8_bvn_prod + quick` on 400Gbps profile
+  - Dynamic closure settings: `round_robin + static_operator` (no dynamic recompute), dynamic message size `128KB`
+  - Outcome: dynamic operators complete without empty-E2E; ratio closure still requires corresponding `128KB` baseline points
+
 - **2026-05-11 / Production rerun:** `results/calendar_study_gpu8_bvn_prod_quick_400g_fix_20260511/report.json`
   - Matrix: `gpu8_bvn_prod + quick` (1MB/32MB), topology bandwidth 400Gbps
   - Deterministic readout: `bvn` as production candidate, `round_robin` as control-only
