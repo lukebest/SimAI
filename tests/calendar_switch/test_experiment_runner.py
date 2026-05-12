@@ -138,13 +138,13 @@ def test_run_calendar_study_gpu8_mixed_dry_run_writes_expected_jobs(tmp_path):
     jobs_file = results_dir / "jobs.txt"
     jobs = jobs_file.read_text(encoding="utf-8").splitlines()
 
-    assert "Total runs: 336" in result.stdout
-    assert len(jobs) == 336
+    assert "Total runs: 312" in result.stdout
+    assert len(jobs) == 312
 
     baseline_jobs = [job for job in jobs if "--mode packet_switch" in job]
     calendar_jobs = [job for job in jobs if "--mode calendar_switch" in job]
     assert len(baseline_jobs) == 30
-    assert len(calendar_jobs) == 306
+    assert len(calendar_jobs) == 282
 
     # Dynamic ops: only round_robin in calendar jobs
     dyn_any_algo = [
@@ -154,6 +154,9 @@ def test_run_calendar_study_gpu8_mixed_dry_run_writes_expected_jobs(tmp_path):
     ]
     assert dyn_any_algo
     assert all("--algorithm round_robin" in j for j in dyn_any_algo)
+    assert all("--calendar-recompute-policy static_operator" in j for j in dyn_any_algo)
+    assert all("--msg-bytes 131072" in j for j in dyn_any_algo)
+    assert all("--moe-gate-trace-mode uniform" in j for j in dyn_any_algo)
 
     # Deterministic: includes solstice / bvn on same operator
     det_sol = [
@@ -177,8 +180,8 @@ def test_run_calendar_study_gpu8_mixed_quick_profile_reduces_matrix(tmp_path):
     )
 
     jobs = (results_dir / "jobs.txt").read_text(encoding="utf-8").splitlines()
-    assert "Total runs: 224" in result.stdout
-    assert len(jobs) == 224
+    assert "Total runs: 212" in result.stdout
+    assert len(jobs) == 212
     assert all("--msg-bytes 268435456" not in job for job in jobs)
 
 
@@ -197,8 +200,8 @@ def test_run_calendar_study_gpu8_bvn_prod_quick_profile_matrix(tmp_path):
     )
 
     jobs = (results_dir / "jobs.txt").read_text(encoding="utf-8").splitlines()
-    assert "Total runs: 164" in result.stdout
-    assert len(jobs) == 164
+    assert "Total runs: 152" in result.stdout
+    assert len(jobs) == 152
     assert all("--msg-bytes 268435456" not in job for job in jobs)
 
     calendar_jobs = [job for job in jobs if "--mode calendar_switch" in job]
@@ -216,6 +219,19 @@ def test_run_calendar_study_gpu8_bvn_prod_quick_profile_matrix(tmp_path):
     assert all("--algorithm solstice" not in job for job in det_jobs)
     assert any("--algorithm bvn" in job for job in det_jobs)
     assert any("--algorithm round_robin" in job for job in det_jobs)
+
+    dyn_jobs = [
+        job
+        for job in calendar_jobs
+        if "--operator alltoall_ep" in job
+        or "--operator moe_dispatch" in job
+        or "--operator moe_combine" in job
+        or "--operator moe_pipeline" in job
+    ]
+    assert dyn_jobs
+    assert all("--calendar-recompute-policy static_operator" in job for job in dyn_jobs)
+    assert all("--msg-bytes 131072" in job for job in dyn_jobs)
+    assert all("--moe-gate-trace-mode uniform" in job for job in dyn_jobs)
 
 
 def test_run_calendar_study_dry_run_writes_expected_jobs(tmp_path):

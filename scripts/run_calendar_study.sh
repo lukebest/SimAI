@@ -19,6 +19,9 @@ TOPOLOGY_8_PACKET=""
 TOPOLOGY_8_CALENDAR=""
 TOPOLOGY_16_PACKET=""
 TOPOLOGY_16_CALENDAR=""
+DYNAMIC_RECOMPUTE_POLICY="static_operator"
+DYNAMIC_MOE_GATE_TRACE_MODE="uniform"
+DYNAMIC_MSG_BYTES=131072
 
 usage() {
     cat <<EOF
@@ -137,6 +140,8 @@ append_job() {
     local msg_bytes="$6"
     local output_dir="$7"
     local topology_file="$8"
+    local recompute_policy="${9:-auto}"
+    local moe_gate_trace_mode="${10:-hotspot_burst}"
 
     local timeout_budget="${SIM_TIMEOUT_SECONDS}"
     # Adaptive timeout cuts long hangs while preserving headroom for larger payloads.
@@ -149,7 +154,7 @@ append_job() {
         esac
     fi
 
-    printf 'SIM_TIMEOUT_SECONDS=%q %q --mode %q --granularity %q --algorithm %q --gpus %q --operator %q --msg-bytes %q --output-dir %q --topology-file %q\n' \
+    printf 'SIM_TIMEOUT_SECONDS=%q %q --mode %q --granularity %q --algorithm %q --gpus %q --operator %q --msg-bytes %q --output-dir %q --topology-file %q --calendar-recompute-policy %q --moe-gate-trace-mode %q\n' \
         "${timeout_budget}" \
         "${ROOT_DIR}/scripts/run_single_experiment.sh" \
         "${mode}" \
@@ -159,7 +164,9 @@ append_job() {
         "${operator}" \
         "${msg_bytes}" \
         "${output_dir}" \
-        "${topology_file}" >> "${JOBS_FILE}"
+        "${topology_file}" \
+        "${recompute_policy}" \
+        "${moe_gate_trace_mode}" >> "${JOBS_FILE}"
 }
 
 resolve_topology() {
@@ -247,12 +254,10 @@ elif [[ "${MATRIX}" == "gpu8_mixed" ]]; then
     for op in "${DYNAMIC_OPS[@]}"; do
         for gran in "${DYNAMIC_GRANULARITIES[@]}"; do
             for gpus in "${GPU_COUNTS[@]}"; do
-                for size in "${MSG_SIZES[@]}"; do
-                    RUN_IDX=$((RUN_IDX + 1))
-                    out="${RESULTS_DIR}/calendar/${op}_${gran}_round_robin_g${gpus}_s${size}"
-                    topo="$(resolve_topology "${gpus}" "calendar_switch")"
-                    append_job "calendar_switch" "${gran}" "round_robin" "${gpus}" "${op}" "${size}" "${out}" "${topo}"
-                done
+                RUN_IDX=$((RUN_IDX + 1))
+                out="${RESULTS_DIR}/calendar/${op}_${gran}_round_robin_g${gpus}_s${DYNAMIC_MSG_BYTES}"
+                topo="$(resolve_topology "${gpus}" "calendar_switch")"
+                append_job "calendar_switch" "${gran}" "round_robin" "${gpus}" "${op}" "${DYNAMIC_MSG_BYTES}" "${out}" "${topo}" "${DYNAMIC_RECOMPUTE_POLICY}" "${DYNAMIC_MOE_GATE_TRACE_MODE}"
             done
         done
     done
@@ -275,12 +280,10 @@ else
     for op in "${DYNAMIC_OPS[@]}"; do
         for gran in "${DYNAMIC_GRANULARITIES[@]}"; do
             for gpus in "${GPU_COUNTS[@]}"; do
-                for size in "${MSG_SIZES[@]}"; do
-                    RUN_IDX=$((RUN_IDX + 1))
-                    out="${RESULTS_DIR}/calendar/${op}_${gran}_round_robin_g${gpus}_s${size}"
-                    topo="$(resolve_topology "${gpus}" "calendar_switch")"
-                    append_job "calendar_switch" "${gran}" "round_robin" "${gpus}" "${op}" "${size}" "${out}" "${topo}"
-                done
+                RUN_IDX=$((RUN_IDX + 1))
+                out="${RESULTS_DIR}/calendar/${op}_${gran}_round_robin_g${gpus}_s${DYNAMIC_MSG_BYTES}"
+                topo="$(resolve_topology "${gpus}" "calendar_switch")"
+                append_job "calendar_switch" "${gran}" "round_robin" "${gpus}" "${op}" "${DYNAMIC_MSG_BYTES}" "${out}" "${topo}" "${DYNAMIC_RECOMPUTE_POLICY}" "${DYNAMIC_MOE_GATE_TRACE_MODE}"
             done
         done
     done
