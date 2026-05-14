@@ -93,6 +93,87 @@ flowchart TB
 
 ---
 
+## 2.1 全部算子流量流向说明（先于结果解读）
+
+为避免“只看比值不看流向”的误读，这里先统一说明各算子的通信路径。后续所有粒度结论都以此为前提。
+
+### 2.1.1 算子流向总览
+
+| 算子 | 流量形态 | 主要流向（逻辑） | 阶段边界 | 是否强依赖准确 demand |
+|------|----------|------------------|----------|------------------------|
+| allreduce_ring | 规则环流 | `i -> (i+1) mod N`（多轮） | ring step | 高 |
+| allreduce_tree | 树上收敛/广播 | 上行聚合 + 下行分发 | tree level | 高 |
+| allgather | 扩散汇聚 | 每卡最终接收全量分片 | step/chunk | 高 |
+| reduce_scatter | 规整“分散归约” | 各 rank 发送分片并归约到目标 rank | step/chunk | **很高** |
+| rs_ag_fused | 两段串联 | `reduce_scatter -> allgather` | **两大阶段** | **很高** |
+| compute_overlap | 通信+计算交错 | 通信阶段与本地计算窗口交织 | **comm/compute 窗口** | 高（对阶段边界敏感） |
+| alltoall_ep | 动态全对全 | token/expert 映射决定 `src->dst` | gate phase | 很高（动态） |
+| moe_dispatch | 动态扇出 | token 从源卡派发到 expert 所在卡 | dispatch phase | 很高（动态） |
+| moe_combine | 动态汇聚 | expert 输出回流原 token 所在卡 | combine phase | 很高（动态） |
+| moe_pipeline | dispatch+compute+combine | dispatch 与 combine 通信，中间 compute 间隙 | **三阶段** | 很高（动态） |
+
+### 2.1.2 重点一：`reduce_scatter` 的流向与调度含义
+
+- **流向本质**：每个 rank 持有完整向量分块，目标是“每个 rank 只留下自己负责的一段归约结果”。  
+- **网络上看到的是**：多个源同时向不同目的 rank 发送块，且每个块在目的端参与归约；属于**多对多但结构规则**的流。
+- **为何粒度重要**：  
+  - `operator` 粒度可抓住全局总需求，适合稳定模式；  
+  - 当 chunk 切分后每步负载不均时，`phase/chunk` 可能更贴近瞬时需求。  
+- **对本报告读法**：`reduce_scatter@32MB` 的 BvN 最优出现在 `operator`，说明本轮负载下“全局一次建表”已足够接近实际热点。
+
+### 2.1.3 重点二：`rs_ag_fused`（ReduceScatter + AllGather 融合）流向
+
+`rs_ag_fused` 不是单一流型，而是两段通信串联：
+
+1. **第一段 `reduce_scatter`**：目标是“分散后各自拿到归约分片”；流向偏多对多归约。  
+2. **第二段 `allgather`**：把分散后的分片重新广播汇聚到每个 rank；流向偏扩散复制。  
+
+这意味着同一算子内部存在**流向语义切换**。如果仅用一个过粗粒度的静态表，可能在段间切换时失配；因此在大消息下常见 `chunk/phase` 粒度更稳健。本报告中 `rs_ag_fused@32MB` 的最优点也落在 `chunk`。
+
+### 2.1.4 重点三：`compute_overlap` 的流向（通信与计算交错）
+
+`compute_overlap` 的关键不是“通信量多寡”，而是**通信窗口被计算窗口切碎**：
+
+- 在通信窗口内，流向可类似 allreduce/rs/ag 的规则流；  
+- 在计算窗口内，网络需求骤降（甚至为空），然后进入下一次通信突发。  
+
+这种“脉冲式”需求对日历表提出两个要求：
+
+1. 能区分 **comm vs compute** 边界（避免把通信配额浪费在计算窗口）；  
+2. 在大消息时能跟随窗口内子阶段热点（`operator` 过粗时会出现不贴合）。
+
+这也解释了本报告中 `compute_overlap@32MB`：`operator` 粒度会劣化，而 `chunk/packet/slot` 更容易贴近有效通信窗口。
+
+### 2.1.5 文字示意图（重点三算子）
+
+```mermaid
+flowchart LR
+  subgraph RS["reduce_scatter"]
+    A1["rank0..N-1 持有全量分片"] --> A2["按目标分片发送并归约"]
+    A2 --> A3["每个rank只保留自己的归约分片"]
+  end
+```
+
+```mermaid
+flowchart LR
+  subgraph FUSED["rs_ag_fused"]
+    B1["阶段1: reduce_scatter"] --> B2["中间态: 每卡1份归约分片"]
+    B2 --> B3["阶段2: allgather"]
+    B3 --> B4["每卡恢复全量结果"]
+  end
+```
+
+```mermaid
+flowchart LR
+  subgraph OVL["compute_overlap"]
+    C1["Comm Window #k"] --> C2["Compute Window #k"]
+    C2 --> C3["Comm Window #k+1"]
+    C3 --> C4["Compute Window #k+1"]
+  end
+```
+
+---
+
 ## 3. 确定性算子：`calendar_switch` vs `packet_switch`
 
 **算子集合（规格书定义）：** `allreduce_ring`、`allreduce_tree`、`allgather`、`reduce_scatter`、`rs_ag_fused`、`compute_overlap`。
@@ -213,6 +294,52 @@ flowchart TB
 ### 5.3 动态算子：粒度几乎不改变结论（本轮 RR + static）
 
 动态子集中 **chunk / packet / slot** 的平均比值均在 **约 2.34** 附近。说明瓶颈主要在 **“静态度 + 错误需求形状”**，而非再细一档的粒度划分。换言之：**不把 gate 信息纳入需求，`packet` 也无法修复结构性失配**。
+
+### 5.4 调度算法计算时间：是否会被“掩盖”？
+
+你的问题很关键。这里把“调度算法 CPU 计算时间”单独拉出来，并实事求是说明：
+
+1. **在当前仿真实现中，这部分时间不计入仿真时间**（即不会进入 E2E/P95/P99/TCT）。  
+2. 但它会影响**墙钟运行时间**（跑实验实际耗时）。
+
+为避免口说无凭，这里给出两张可复现表。
+
+#### 表 A：单次调度生成 CPU 时间（实测微基准，8x8 demand，frame=1024）
+
+微基准程序：`scripts/bench_calendar_schedule_runtime.cpp`  
+编译运行命令：`g++ -O3 -std=c++17 scripts/bench_calendar_schedule_runtime.cpp -o scripts/bench_calendar_schedule_runtime && scripts/bench_calendar_schedule_runtime`
+
+| 算法 | 需求模式 | 单次 `BuildCalendarSchedule` 平均耗时（us） |
+|------|----------|---------------------------------------------|
+| BvN | dense8x8 | 32.57 |
+| Solstice | dense8x8 | 70.79 |
+| BvN | ring8 | 19.38 |
+| Solstice | ring8 | 55.96 |
+
+#### 表 B：按粒度估算“若计入E2E”时的占比（确定性算子，BvN 子集）
+
+统计口径：
+
+- 数据源：`results/calendar_study_gpu8_bvn_prod_quick_400g_dynamicfix_20260512/report.json`
+- 子集：确定性算子 + BvN + baseline 可匹配 + 非空 E2E
+- 由 `calendar_trace.csv` 统计，每个 run 在当前 `static_operator` 策略下 **平均调度触发次数=1**
+- 用表 A 的单次耗时估算总调度 CPU 时间（保守取 dense8x8）
+
+| 粒度 | 样本数 | 平均调度触发次数/任务 | 平均任务 p95（us） | 估算 BvN 计算占比（32.57us） | 估算 Solstice 计算占比（70.79us） |
+|------|--------|------------------------|--------------------|-------------------------------|-----------------------------------|
+| operator | 12 | 1.0 | 496.30 | 6.56% | 14.26% |
+| phase | 12 | 1.0 | 499.23 | 6.52% | 14.18% |
+| chunk | 12 | 1.0 | 490.80 | 6.64% | 14.42% |
+| packet | 12 | 1.0 | 490.80 | 6.64% | 14.42% |
+| slot | 12 | 1.0 | 490.80 | 6.64% | 14.42% |
+
+**实事求是结论：**
+
+- **就“当前报告里的仿真指标”而言：存在完全掩盖。**  
+  因为调度计算时间根本没有被注入 `Simulator::Now()` 时间线，E2E 指标看不到这部分成本。
+- **就“如果把该时间建模进 E2E”而言：在当前确定性配置下，掩盖空间有限。**  
+  原因是各粒度触发次数都接近 1 次/任务，所以算法计算开销不会因粒度而拉开；其量级约是任务时间的 **6%（BvN）到14%（Solstice）**（基于本机微基准、保守 dense 假设）。
+- **若改为高频重调度（例如真正 dynamic 的 packet/slot 持续重算）**，占比会按触发次数近似线性上升，届时“计算时间被掩盖”的前提将不再成立，需要单独建模（建议加入 `CALENDAR_RECONFIG_LATENCY_NS`）。
 
 ---
 
